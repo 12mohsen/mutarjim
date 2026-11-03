@@ -698,7 +698,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.19.0';
+  const APP_VERSION = '1.20.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -815,6 +815,7 @@
       dbBadUrl: 'الرابط غير صحيح أو الجداول غير منشأة. انسخ Project URL من Supabase ← Settings ← API، ونفّذ أوامر SQL.',
       dbBadKey: 'المفتاح مرفوض. استخدم مفتاح sb_publishable_ من Settings ← API.',
       dbNoTables: 'الجداول غير موجودة — نفّذ أوامر SQL في محرر SQL داخل Supabase.',
+      dbDup: 'الفهرس الفريد قديم — نفّذ أوامر SQL مرة أخرى (نسخة محدّثة) ثم أعد المحاولة.',
       dbNoNet: 'تعذّر الوصول إلى Supabase — تحقّق من الاتصال.',
       dbMissing: 'أدخل رابط Supabase والمفتاح أولًا.',
       copySql: 'نسخ أوامر SQL', useMemoryLbl: 'استخدام ذاكرة الترجمة (إرجاع فوري للجمل المتكررة)',
@@ -929,6 +930,7 @@
       dbBadUrl: 'URL salah atau tabel belum dibuat. Salin Project URL dari Settings → API dan jalankan SQL-nya.',
       dbBadKey: 'Kunci ditolak. Pakai kunci sb_publishable_ dari Settings → API.',
       dbNoTables: 'Tabel belum ada — jalankan perintah SQL di SQL Editor Supabase.',
+      dbDup: 'Indeks unik lama — jalankan ulang SQL (versi baru) lalu coba lagi.',
       dbNoNet: 'Supabase tidak terjangkau — periksa koneksi.',
       dbMissing: 'Masukkan URL Supabase dan kunci dulu.',
       copySql: 'Salin perintah SQL', useMemoryLbl: 'Pakai memori terjemahan (kalimat berulang langsung)',
@@ -1043,6 +1045,7 @@
       dbBadUrl: 'Wrong URL, or the tables do not exist. Copy Project URL from Settings → API and run the SQL.',
       dbBadKey: 'Key rejected. Use the sb_publishable_ key from Settings → API.',
       dbNoTables: 'Tables missing — run the SQL in the Supabase SQL editor.',
+      dbDup: 'The unique index is outdated — run the SQL again (new version) and retry.',
       dbNoNet: 'Supabase unreachable — check the connection.',
       dbMissing: 'Enter the Supabase URL and key first.',
       copySql: 'Copy SQL', useMemoryLbl: 'Use translation memory (repeats return instantly)',
@@ -1399,6 +1402,7 @@
     const d = String((err && err.detail) || (err && err.message) || '').toLowerCase();
     if (code === 'NO_DB') return t('dbMissing');
     if (st === 401 || st === 403 || /jwt|api key|apikey|unauthorized/.test(d)) return t('dbBadKey');
+    if (st === 409) return t('dbDup');
     if (/does not exist|relation|schema cache/.test(d)) return t('dbNoTables');
     if (st === 404) return t('dbBadUrl');
     if (code === 'NETWORK' || code === 'TIMEOUT') return t('dbNoNet');
@@ -1496,7 +1500,7 @@
   async function memorySave(text, out, from, to, corrected) {
     if (!sbReady() || !S.useMemory) return;
     try {
-      await sbFetch('tmemory', {
+      await sbFetch('tmemory?on_conflict=src_lang,tgt_lang,src_norm', {
         method: 'POST',
         headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
         body: [{
@@ -1570,7 +1574,7 @@
       let done = 0;
       for (let i = 0; i < rows.length; i += 100) {
         const chunk = rows.slice(i, i + 100);
-        await sbFetch('tmemory', {
+        await sbFetch('tmemory?on_conflict=src_lang,tgt_lang,src_norm', {
           method: 'POST',
           headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
           body: chunk
@@ -1589,7 +1593,7 @@
   }
 
   async function glossaryAdd(term, translation, from, to, note) {
-    await sbFetch('glossary', {
+    await sbFetch('glossary?on_conflict=src_lang,tgt_lang,term', {
       method: 'POST',
       headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
       body: [{ src_lang: from, tgt_lang: to, term: term, translation: translation, note: note || null }]
@@ -3570,7 +3574,8 @@
     '  note text,',
     '  created_at timestamptz default now()',
     ');',
-    'create unique index if not exists glossary_key on glossary (src_lang, tgt_lang, lower(term));',
+    'drop index if exists glossary_key;',
+    'create unique index if not exists glossary_key on glossary (src_lang, tgt_lang, term);',
     '',
     'create table if not exists tmemory (',
     '  id uuid primary key default gen_random_uuid(),',
