@@ -632,7 +632,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.14.0';
+  const APP_VERSION = '1.15.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -1038,6 +1038,17 @@
   if (typeof S.model === 'string' && S.model && !S.models.gemini) S.models.gemini = S.model;
   delete S.apiKey; delete S.model;
   PROV_ORDER.forEach(p => { if (!S.models[p]) S.models[p] = PROVIDERS[p].def; });
+
+  // An earlier version auto-selected a reasoning model for translation; it costs a
+  // second per sentence and sometimes returns nothing. Correct that choice once.
+  (function fixSlowModel() {
+    if (S.modelFixed) return;
+    S.modelFixed = true;
+    PROV_ORDER.forEach(id => {
+      const m = String(S.models[id] || '');
+      if (/gpt-oss|reasoner|thinking|-r1|qwq/i.test(m)) S.models[id] = PROVIDERS[id].def;
+    });
+  })();
 
   function curProv() { return PROVIDERS[S.provider] || PROVIDERS.gemini; }
   function curKey() { return String(S.keys[curProv().id] || '').trim(); }
@@ -2657,7 +2668,21 @@
         fd.append('language', lockTo);
         fd.append('prompt', STT_PROMPT[lockTo] || STT_PROMPT.en);
       }
-      const res = await fetch(P.sttUrl, { method: 'POST', headers: { Authorization: 'Bearer ' + key }, body: fd });
+      const ctl = new AbortController();
+      const timer = setTimeout(() => { try { ctl.abort(); } catch (_) {} }, 25000);
+      let res;
+      try {
+        res = await fetch(P.sttUrl, {
+          method: 'POST', headers: { Authorization: 'Bearer ' + key }, body: fd, signal: ctl.signal
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        const aborted = err && err.name === 'AbortError';
+        const e = new Error(aborted ? 'TIMEOUT' : 'NETWORK');
+        e.code = aborted ? 'TIMEOUT' : 'NETWORK';
+        throw e;
+      }
+      clearTimeout(timer);
       if (!res.ok) {
         let d = ''; try { const j = await res.json(); d = (j && j.error && j.error.message) || ''; } catch (_) {}
         throw httpError(res.status, d);
@@ -2721,12 +2746,17 @@
   }
 
   async function sttFlush() {
+    // a stuck request must never deafen the app forever
+    if (STT.busy && STT.busyAt && Date.now() - STT.busyAt > 30000) {
+      dlog('stt.unstick', 'forced busy reset');
+      STT.busy = false;
+    }
     if (!STT.buf.length || STT.busy) { STT.buf = []; STT.voiced = 0; return; }
     const chunks = STT.buf; STT.buf = [];
     const voiced = STT.voiced; STT.voiced = 0;
     if (voiced < pace().minVoiced) return;
 
-    STT.busy = true;
+    STT.busy = true; STT.busyAt = Date.now();
     micStatus(t('sttWorking'), true);
     const t0 = Date.now();
     dlog('stt.flush', { voicedMs: Math.round(voiced), frames: chunks.length });
@@ -2799,7 +2829,7 @@
     } catch (err) {
       dlog('stt.error', { code: (err && err.code) || '?', msg: String((err && err.message) || err).slice(0, 120) });
       micStatus(t('sttFail') + ' — ' + providerErrorText(err), true);
-    } finally { STT.busy = false; }
+    } finally { STT.busy = false; STT.busyAt = 0; }
   }
 
   function sttPause() { STT.speaking = false; STT.buf = []; STT.voiced = 0; STT.paused = true; }
