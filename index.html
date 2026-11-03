@@ -544,6 +544,12 @@
         <input type="checkbox" id="vizToggle" class="!w-4 !h-4 accent-[var(--accent)]">
         <span data-i18n="vizLbl">إظهار مؤشر الموجة (أطفئه إذا لم يلتقط الميكروفون كلامك)</span>
       </label>
+      <label class="block text-xs font-extrabold mt-4 mb-1.5" for="paceSel" data-i18n="paceLbl">سرعة الالتقاط</label>
+      <select id="paceSel" class="!text-sm">
+        <option value="fast" data-i18n="paceFast">سريع — يقطع بعد 0.4 ثانية صمت (للمحادثة الحيّة)</option>
+        <option value="balanced" data-i18n="paceBalanced">متوازن — 0.75 ثانية</option>
+        <option value="accurate" data-i18n="paceAccurate">دقيق — 1.2 ثانية (جمل طويلة)</option>
+      </select>
       <label class="block text-xs font-extrabold mt-4 mb-1.5" for="sttEngine" data-i18n="sttEngineLbl">محرّك التعرّف على الصوت</label>
       <select id="sttEngine" class="!text-sm">
         <option value="auto" data-i18n="sttAuto">تلقائي (المتصفح، ثم السحابي عند الفشل)</option>
@@ -667,6 +673,10 @@
       sttSwitched: 'تعذّر تعرّف المتصفح — تم التحويل إلى التعرّف السحابي عبر {p}.',
       sttUnsupported: 'المزوّد {p} لا يدعم تحويل الصوت إلى نص — اختر Groq أو OpenAI أو Gemini.',
       reasonDeaf: 'لا يصل نص من المتصفح',
+      paceLbl: 'سرعة الالتقاط', paceSet: 'تم تغيير سرعة الالتقاط.',
+      paceFast: 'سريع — يقطع بعد 0.4 ثانية صمت (للمحادثة الحيّة)',
+      paceBalanced: 'متوازن — 0.75 ثانية', paceAccurate: 'دقيق — 1.2 ثانية (جمل طويلة)',
+      heard: 'سمع', translated: 'ترجم',
       micOff: 'التعرّف على الصوت غير مدعوم في هذا المتصفح — استخدم Chrome أو Edge.',
       voiceCtl: 'إعدادات الصوت', voice: 'الصوت', rate: 'السرعة', pitch: 'النبرة',
       histTitle: 'سجل المحادثة', histEmpty: 'لا توجد ترجمات محفوظة بعد.',
@@ -743,6 +753,10 @@
       sttSwitched: 'Pengenalan peramban gagal — beralih ke awan lewat {p}.',
       sttUnsupported: 'Penyedia {p} tidak mendukung suara ke teks — pilih Groq, OpenAI atau Gemini.',
       reasonDeaf: 'peramban tidak mengembalikan teks',
+      paceLbl: 'Kecepatan tangkap', paceSet: 'Kecepatan tangkap diubah.',
+      paceFast: 'Cepat — potong setelah 0,4 detik hening (percakapan langsung)',
+      paceBalanced: 'Seimbang — 0,75 detik', paceAccurate: 'Akurat — 1,2 detik (kalimat panjang)',
+      heard: 'dengar', translated: 'terjemah',
       micOff: 'Pengenalan suara tidak didukung di peramban ini — gunakan Chrome atau Edge.',
       voiceCtl: 'Pengaturan Suara', voice: 'Suara', rate: 'Kecepatan', pitch: 'Nada',
       histTitle: 'Riwayat', histEmpty: 'Belum ada terjemahan tersimpan.',
@@ -819,6 +833,10 @@
       sttSwitched: 'The browser engine failed — switched to cloud recognition via {p}.',
       sttUnsupported: 'Provider {p} has no speech-to-text — pick Groq, OpenAI or Gemini.',
       reasonDeaf: 'no text from the browser',
+      paceLbl: 'Capture speed', paceSet: 'Capture speed changed.',
+      paceFast: 'Fast — cuts after 0.4s of silence (live conversation)',
+      paceBalanced: 'Balanced — 0.75s', paceAccurate: 'Accurate — 1.2s (long sentences)',
+      heard: 'heard', translated: 'translated',
       micOff: 'Speech recognition is not supported in this browser — use Chrome or Edge.',
       voiceCtl: 'Voice Settings', voice: 'Voice', rate: 'Rate', pitch: 'Pitch',
       histTitle: 'History', histEmpty: 'No saved translations yet.',
@@ -905,7 +923,7 @@
     theme: 'dark', uiLang: 'ar', src: 'auto', tgt: 'en',
     rate: 1, pitch: 1, provider: 'gemini', keys: {}, models: {},
     formal: false, autoSpeak: false, handsFree: false, twoWay: false, histView: 'list', viz: true,
-    sttEngine: 'auto', browserSttBroken: false, voices: {}
+    sttEngine: 'auto', browserSttBroken: false, pace: 'fast', voices: {}
   };
   const S = Object.assign({}, DEFAULTS, store.get(LS_KEYS.settings, {}));
   if (!LANGS[S.src]) S.src = 'auto';
@@ -1098,11 +1116,27 @@
   const quirks = store.get(QUIRK_KEY, {}) || {};
   const saveQuirks = debounce(() => store.set(QUIRK_KEY, quirks), 300);
 
-  function buildPrompt(text, from, to) {
+  function buildPrompt(text, from, to, plain) {
     const target = LANG_FULL[to];
     const srcLine = from === 'auto'
       ? 'The source language is UNKNOWN: identify it first (it will be Arabic, Indonesian or English).'
       : 'The source language is ' + LANG_FULL[from] + '.';
+
+    // When the direction is already known there is nothing to detect, so skip the
+    // JSON envelope entirely: fewer tokens to generate means a faster reply.
+    if (plain) {
+      return [
+        'You are an expert translator. Translate the text below into ' + target + '.',
+        srcLine,
+        'Translate meaning, not words: the result must read as natural ' + target + ', with idioms rendered by their closest local equivalent.',
+        S.formal ? 'Use a polite, formal register.' : 'Keep the same register as the input.',
+        'Keep proper nouns, numbers and dates unchanged. Use the punctuation style of ' + target + '.',
+        'Output ONLY the translation: no quotes, no notes, no explanation.',
+        '',
+        String(text)
+      ].join('\n');
+    }
+
     const tone = S.formal
       ? 'Prefer a polite, formal register (فصحى for Arabic, bahasa baku for Indonesian).'
       : 'Mirror the register of the input: keep casual input casual and formal input formal.';
@@ -1213,13 +1247,15 @@
     return { translation, detected, note, engine: providerId };
   }
 
-  async function callGeminiAPI(P, model, key, prompt) {
+  async function callGeminiAPI(P, model, key, prompt, plain, budget) {
+    const genCfg = { temperature: 0.25, topP: 0.95, maxOutputTokens: budget || 4096 };
+    if (!plain) genCfg.responseMimeType = 'application/json';
     const data = await postJSON(
       P.url + encodeURIComponent(model) + ':generateContent',
       { 'x-goog-api-key': key },
       {
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.25, topP: 0.95, maxOutputTokens: 4096, responseMimeType: 'application/json' },
+        generationConfig: genCfg,
         safetySettings: [
           { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
           { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
@@ -1240,7 +1276,7 @@
   }
 
   // OpenAI-compatible chat completions: OpenAI, DeepSeek and Groq all speak it
-  async function callChatAPI(P, model, key, prompt, pid) {
+  async function callChatAPI(P, model, key, prompt, pid, plain, budget) {
     const qk = pid + '|' + model;
     const q = quirks[qk] || (quirks[qk] = {});
 
@@ -1248,13 +1284,16 @@
       const b = {
         model: model,
         messages: [
-          { role: 'system', content: 'You are a precise professional translator. You always reply with a single JSON object and nothing else.' },
+          { role: 'system', content: plain
+              ? 'You are a precise professional translator. Reply with the translation only.'
+              : 'You are a precise professional translator. You always reply with a single JSON object and nothing else.' },
           { role: 'user', content: prompt }
         ]
       };
       if (!q.noTemp) b.temperature = 0.25;
-      if (q.maxCompletion) b.max_completion_tokens = 4096; else b.max_tokens = 4096;
-      if (!q.noJson) b.response_format = { type: 'json_object' };
+      const cap = budget || 4096;
+      if (q.maxCompletion) b.max_completion_tokens = cap; else b.max_tokens = cap;
+      if (!plain && !q.noJson) b.response_format = { type: 'json_object' };
       return b;
     }
 
@@ -1270,7 +1309,7 @@
         if (!err || err.status !== 400) throw err;
         const d = String(err.detail || err.message || '').toLowerCase();
         let fixed = false;
-        if (!q.noJson && (d.indexOf('response_format') >= 0 || d.indexOf('json_object') >= 0 || d.indexOf('json mode') >= 0)) { q.noJson = true; fixed = true; }
+        if (!plain && !q.noJson && (d.indexOf('response_format') >= 0 || d.indexOf('json_object') >= 0 || d.indexOf('json mode') >= 0)) { q.noJson = true; fixed = true; }
         if (!q.maxCompletion && d.indexOf('max_tokens') >= 0 && d.indexOf('max_completion_tokens') >= 0) { q.maxCompletion = true; fixed = true; }
         if (!q.noTemp && d.indexOf('temperature') >= 0) { q.noTemp = true; fixed = true; }
         if (!fixed) throw err;
@@ -1351,18 +1390,22 @@
   }
 
   async function callModel(text, from, to, modelOverride) {
+    const plain = from !== 'auto';                 // direction known: no detection needed
     const pid = PROVIDERS[S.provider] ? S.provider : 'gemini';
     const P = PROVIDERS[pid];
     const key = String((S.keys && S.keys[pid]) || '').trim();
     if (!key) { const e = new Error('NO_KEY'); e.code = 'NO_KEY'; e.provider = pid; throw e; }
     const model = String(modelOverride || (S.models && S.models[pid]) || P.def).trim() || P.def;
-    const prompt = buildPrompt(text, from, to);
+    const prompt = buildPrompt(text, from, to, plain);
+    const budget = Math.max(256, Math.min(4096, Math.ceil(String(text).length * 3) + 128));
 
     const raw = P.kind === 'gemini'
-      ? await callGeminiAPI(P, model, key, prompt)
-      : await callChatAPI(P, model, key, prompt, pid);
+      ? await callGeminiAPI(P, model, key, prompt, plain, budget)
+      : await callChatAPI(P, model, key, prompt, pid, plain, budget);
 
-    return parseModelText(raw, pid);
+    const out = parseModelText(raw, pid);
+    if (plain) { out.detected = from; }
+    return out;
   }
 
   // A model the key cannot use is not a dead end: walk the candidate list until one
@@ -2306,9 +2349,13 @@
     buf: [], srcRate: 48000, speaking: false, silence: 0, voiced: 0, busy: false
   };
   const STT_TARGET_RATE = 16000;
-  const STT_SILENCE_MS = 1100;      // quiet gap that ends an utterance
-  const STT_MIN_VOICED_MS = 400;    // ignore coughs and clicks
-  const STT_MAX_MS = 25000;         // never let one clip grow unbounded
+  const PACE = {                    // how long a pause has to be before we cut
+    fast:     { silence: 420,  minVoiced: 260 },
+    balanced: { silence: 750,  minVoiced: 350 },
+    accurate: { silence: 1200, minVoiced: 450 }
+  };
+  function pace() { return PACE[S.pace] || PACE.fast; }
+  const STT_MAX_MS = 7000;          // cut long speech mid-flow instead of making it wait
 
   function providerCanSTT() {
     const P = curProv();
@@ -2402,13 +2449,15 @@
     if (!STT.buf.length || STT.busy) { STT.buf = []; STT.voiced = 0; return; }
     const chunks = STT.buf; STT.buf = [];
     const voiced = STT.voiced; STT.voiced = 0;
-    if (voiced < STT_MIN_VOICED_MS) return;
+    if (voiced < pace().minVoiced) return;
 
     STT.busy = true;
     micStatus(t('sttWorking'), true);
+    const t0 = Date.now();
     try {
       const pcm = downsample(chunks, STT.srcRate, STT_TARGET_RATE);
       const text = await transcribeBlob(encodeWav(pcm, STT_TARGET_RATE));
+      const tHeard = Date.now() - t0;
       micStatus('', false);
       if (!text) return;
 
@@ -2424,7 +2473,10 @@
         const say = (ta && ta.value || '').trim();
         if (say && say !== lastSpoken) {
           lastSpoken = say;
+          const t1 = Date.now();
           await doTranslate();
+          micStatus('⏱ ' + t('heard') + ' ' + (tHeard / 1000).toFixed(1) + 's · ' +
+                    t('translated') + ' ' + ((Date.now() - t1) / 1000).toFixed(1) + 's', true);
           if (lastResult && lastResult.out) {
             if (S.twoWay) setListenLang(lastResult.to, false);
             sttPause();
@@ -2491,7 +2543,7 @@
       } else if (STT.speaking) {                   // trailing quiet: keep it, it ends words cleanly
         STT.silence += frameMs;
         STT.buf.push(new Float32Array(input));
-        if (STT.silence >= STT_SILENCE_MS) { STT.speaking = false; STT.silence = 0; sttFlush(); }
+        if (STT.silence >= pace().silence) { STT.speaking = false; STT.silence = 0; sttFlush(); }
       }
       if (STT.voiced >= STT_MAX_MS) { STT.speaking = false; STT.silence = 0; sttFlush(); }
     };
@@ -2772,6 +2824,8 @@
     formal.addEventListener('change', () => { S.formal = formal.checked; saveSettings(); });
     const autoSp = $('autoSpeak'); autoSp.checked = !!S.autoSpeak;
     autoSp.addEventListener('change', () => { S.autoSpeak = autoSp.checked; saveSettings(); });
+    const pc = $('paceSel'); pc.value = S.pace || 'fast';
+    pc.addEventListener('change', () => { S.pace = pc.value; saveSettings(); toast(t('paceSet'), 'ok', 2000); });
     const se = $('sttEngine'); se.value = S.sttEngine || 'auto';
     se.addEventListener('change', () => {
       S.sttEngine = se.value;
