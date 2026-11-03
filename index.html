@@ -357,6 +357,7 @@
           <canvas id="viz" aria-hidden="true"></canvas>
           <div class="flex items-center justify-between gap-2 mt-1 flex-wrap">
             <p id="micHint" class="text-[11px] dim start" data-i18n="micIdle">اضغط الميكروفون وابدأ الحديث — التعرّف مستمر.</p>
+            <p id="micStatus" class="text-[11px] start font-latin hidden" style="color:var(--warn)"></p>
             <div class="flex items-center gap-1.5 flex-wrap">
               <button id="listenChip" class="chip" type="button"><span data-lucide="ear"></span></button>
               <button id="handsFreeBtn" class="chip" style="cursor:pointer" aria-pressed="false" title="ترجمة ونطق تلقائي عند التوقف عن الكلام" data-i18n-title="handsFreeHint">
@@ -539,6 +540,10 @@
         <input type="checkbox" id="autoSpeak" class="!w-4 !h-4 accent-[var(--accent)]">
         <span data-i18n="autoSpeakLbl">تشغيل الصوت تلقائيًا بعد الترجمة (يحتاج تفاعلًا مسبقًا)</span>
       </label>
+      <label class="flex items-center gap-2 mt-2 text-sm cursor-pointer">
+        <input type="checkbox" id="vizToggle" class="!w-4 !h-4 accent-[var(--accent)]">
+        <span data-i18n="vizLbl">إظهار مؤشر الموجة (أطفئه إذا لم يلتقط الميكروفون كلامك)</span>
+      </label>
     </div>
 
     <div class="glass-soft p-4 start">
@@ -640,6 +645,10 @@
       providerSwitched: 'المزوّد الحالي بلا مفتاح — تم التحويل إلى {p}',
       listeningIn: 'يستمع بـ', flipListen: 'اضغط لتبديل لغة الاستماع للطرف الآخر',
       flipNeedsTwoWay: 'فعّل «حوار بين طرفين» أولًا لتبديل لغة الاستماع.',
+      vizLbl: 'إظهار مؤشر الموجة (أطفئه إذا لم يلتقط الميكروفون كلامك)',
+      vizReleased: 'لم يصل أي كلام — تم تحرير الميكروفون من مؤشر الموجة. تكلّم الآن.',
+      noSpeechYet: 'ما زال التعرّف لا يُرجع نصًا. جرّب إطفاء مؤشر الموجة من الإعدادات، وتأكد أن المتصفح يستخدم الميكروفون الصحيح.',
+      netSpeechHint: 'خدمة التعرّف تحتاج اتصالًا بخوادم Google.',
       micOff: 'التعرّف على الصوت غير مدعوم في هذا المتصفح — استخدم Chrome أو Edge.',
       voiceCtl: 'إعدادات الصوت', voice: 'الصوت', rate: 'السرعة', pitch: 'النبرة',
       histTitle: 'سجل المحادثة', histEmpty: 'لا توجد ترجمات محفوظة بعد.',
@@ -701,6 +710,10 @@
       providerSwitched: 'Penyedia saat ini tanpa kunci — dialihkan ke {p}',
       listeningIn: 'Mendengar dalam', flipListen: 'Tekan untuk ganti ke bahasa pihak lain',
       flipNeedsTwoWay: 'Aktifkan «Dialog dua arah» dulu untuk mengganti bahasa dengar.',
+      vizLbl: 'Tampilkan meter suara (matikan jika mikrofon tidak menangkap suara)',
+      vizReleased: 'Tidak ada suara terdeteksi — meter dilepas dari mikrofon. Coba bicara sekarang.',
+      noSpeechYet: 'Pengenalan masih tidak mengembalikan teks. Matikan meter suara di Pengaturan dan periksa mikrofon yang dipakai peramban.',
+      netSpeechHint: 'Layanan pengenalan butuh koneksi ke server Google.',
       micOff: 'Pengenalan suara tidak didukung di peramban ini — gunakan Chrome atau Edge.',
       voiceCtl: 'Pengaturan Suara', voice: 'Suara', rate: 'Kecepatan', pitch: 'Nada',
       histTitle: 'Riwayat', histEmpty: 'Belum ada terjemahan tersimpan.',
@@ -762,6 +775,10 @@
       providerSwitched: 'The selected provider has no key — switched to {p}',
       listeningIn: 'Listening in', flipListen: 'Tap to hand the mic to the other language',
       flipNeedsTwoWay: 'Turn on two-way dialogue first to switch the listening language.',
+      vizLbl: 'Show the audio meter (turn off if the mic picks up nothing)',
+      vizReleased: 'No speech arrived — the meter released the microphone. Try speaking now.',
+      noSpeechYet: 'Recognition still returns no text. Turn the audio meter off in Settings and check which microphone the browser uses.',
+      netSpeechHint: 'The recognition service needs a connection to Google servers.',
       micOff: 'Speech recognition is not supported in this browser — use Chrome or Edge.',
       voiceCtl: 'Voice Settings', voice: 'Voice', rate: 'Rate', pitch: 'Pitch',
       histTitle: 'History', histEmpty: 'No saved translations yet.',
@@ -844,7 +861,7 @@
   const DEFAULTS = {
     theme: 'dark', uiLang: 'ar', src: 'auto', tgt: 'en',
     rate: 1, pitch: 1, provider: 'gemini', keys: {}, models: {},
-    formal: false, autoSpeak: false, handsFree: false, twoWay: false, histView: 'list', voices: {}
+    formal: false, autoSpeak: false, handsFree: false, twoWay: false, histView: 'list', viz: true, voices: {}
   };
   const S = Object.assign({}, DEFAULTS, store.get(LS_KEYS.settings, {}));
   if (!LANGS[S.src]) S.src = 'auto';
@@ -1931,6 +1948,34 @@
   let recog = null, recognizing = false, wantRecognize = false;
   let baseTranscript = '';
   let pausedForSpeech = false, handsFreeTimer = null, lastSpoken = '';
+  let lastResultAt = 0, watchdog = null, vizBlamed = false;
+
+  function micStatus(msg, show) {
+    const el = $('micStatus');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.classList.toggle('hidden', !show || !msg);
+  }
+
+  // The recognizer can run while silently returning nothing — usually because
+  // something else holds the microphone. Notice it and free the visualizer.
+  function startWatchdog() {
+    clearInterval(watchdog);
+    watchdog = setInterval(() => {
+      if (!wantRecognize || pausedForSpeech) return;
+      const idle = Date.now() - lastResultAt;
+      if (idle > 8000 && !vizBlamed && (micStream || audioCtx)) {
+        vizBlamed = true;
+        stopViz();                       // give the mic back to the recognizer
+        micStatus(t('vizReleased'), true);
+      } else if (idle > 18000 && vizBlamed) {
+        micStatus(t('noSpeechYet'), true);
+        lastResultAt = Date.now();       // report once per stretch, then keep listening
+      }
+    }, 2000);
+  }
+
+  function stopWatchdog() { clearInterval(watchdog); watchdog = null; }
 
   /* ---- hands-free: translate when the speaker pauses, then read the result ---- */
   const HF_SILENCE = 1100;   // ms of quiet that ends an utterance
@@ -2047,9 +2092,17 @@
     r.maxAlternatives = 1;
     r.lang = recogLang();
 
-    r.onstart = () => { recognizing = true; setMicUI(true); };
+    r.onstart = () => {
+      recognizing = true; setMicUI(true);
+      lastResultAt = Date.now();
+      startWatchdog();
+      micStatus('', false);
+    };
 
     r.onresult = (ev) => {
+      lastResultAt = Date.now();
+      vizBlamed = false;
+      micStatus('', false);
       let finalAdd = '', interim = '';
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const res = ev.results[i];
@@ -2068,6 +2121,8 @@
 
     r.onerror = (ev) => {
       const code = (ev && ev.error) || 'unknown';
+      if (code !== 'no-speech' && code !== 'aborted') micStatus('speech error: ' + code, true);
+      if (code === 'network') micStatus('speech error: network — ' + t('netSpeechHint'), true);
       if (code === 'not-allowed' || code === 'service-not-allowed') {
         wantRecognize = false;
         toast(t('micDenied'), 'err', 5000);
@@ -2092,7 +2147,7 @@
           try { r.lang = recogLang(); r.start(); }
           catch (_) { wantRecognize = false; setMicUI(false); stopViz(); }
         }, 260);
-      } else { setMicUI(false); stopViz(); }
+      } else { setMicUI(false); stopViz(); stopWatchdog(); micStatus('', false); }
     };
     return r;
   }
@@ -2100,6 +2155,7 @@
   async function startViz() {
     const canvas = $('viz');
     if (!canvas) return;
+    if (S.viz === false) { drawIdleViz(); return; }   // user turned the meter off
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('no gUM');
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -2198,9 +2254,10 @@
     if (wantRecognize || recognizing) {
       wantRecognize = false;
       try { if (recog) recog.stop(); } catch (_) {}
-      setMicUI(false); stopViz();
+      setMicUI(false); stopViz(); stopWatchdog(); micStatus('', false);
       return;
     }
+    vizBlamed = false;
     baseTranscript = ($('inputText').value || '').trim();
     wantRecognize = true;
     if (!recog) recog = buildRecognition();
@@ -2414,6 +2471,11 @@
     formal.addEventListener('change', () => { S.formal = formal.checked; saveSettings(); });
     const autoSp = $('autoSpeak'); autoSp.checked = !!S.autoSpeak;
     autoSp.addEventListener('change', () => { S.autoSpeak = autoSp.checked; saveSettings(); });
+    const vz = $('vizToggle'); vz.checked = S.viz !== false;
+    vz.addEventListener('change', () => {
+      S.viz = vz.checked; saveSettings();
+      if (!S.viz) stopViz(); else if (wantRecognize) startViz();
+    });
     $('testApiBtn').addEventListener('click', testApi);
 
     // modal closing
