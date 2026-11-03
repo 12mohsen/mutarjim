@@ -693,7 +693,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.17.0';
+  const APP_VERSION = '1.18.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -807,6 +807,10 @@
       dbTitle: 'قاموس المصطلحات وذاكرة الترجمة',
       dbHint: 'مشروع Supabase خاص بهذا التطبيق وحده. يُحفظ المفتاح في متصفحك فقط ولا يدخل ملف الصفحة.',
       dbTest: 'اختبار القاعدة', dbOk: 'القاعدة متصلة', dbFail: 'فشل الاتصال بالقاعدة',
+      dbBadUrl: 'الرابط غير صحيح أو الجداول غير منشأة. انسخ Project URL من Supabase ← Settings ← API، ونفّذ أوامر SQL.',
+      dbBadKey: 'المفتاح مرفوض. استخدم مفتاح sb_publishable_ من Settings ← API.',
+      dbNoTables: 'الجداول غير موجودة — نفّذ أوامر SQL في محرر SQL داخل Supabase.',
+      dbNoNet: 'تعذّر الوصول إلى Supabase — تحقّق من الاتصال.',
       dbMissing: 'أدخل رابط Supabase والمفتاح أولًا.',
       copySql: 'نسخ أوامر SQL', useMemoryLbl: 'استخدام ذاكرة الترجمة (إرجاع فوري للجمل المتكررة)',
       glossOpen: 'القاموس', glossTitle: 'قاموس المصطلحات',
@@ -914,6 +918,10 @@
       dbTitle: 'Glosarium & memori terjemahan',
       dbHint: 'Proyek Supabase khusus aplikasi ini. Kunci hanya disimpan di peramban Anda.',
       dbTest: 'Uji basis data', dbOk: 'Basis data tersambung', dbFail: 'Gagal menyambung ke basis data',
+      dbBadUrl: 'URL salah atau tabel belum dibuat. Salin Project URL dari Settings → API dan jalankan SQL-nya.',
+      dbBadKey: 'Kunci ditolak. Pakai kunci sb_publishable_ dari Settings → API.',
+      dbNoTables: 'Tabel belum ada — jalankan perintah SQL di SQL Editor Supabase.',
+      dbNoNet: 'Supabase tidak terjangkau — periksa koneksi.',
       dbMissing: 'Masukkan URL Supabase dan kunci dulu.',
       copySql: 'Salin perintah SQL', useMemoryLbl: 'Pakai memori terjemahan (kalimat berulang langsung)',
       glossOpen: 'Glosarium', glossTitle: 'Glosarium istilah',
@@ -1021,6 +1029,10 @@
       dbTitle: 'Glossary & translation memory',
       dbHint: 'A Supabase project for this app alone. The key is kept in your browser only.',
       dbTest: 'Test database', dbOk: 'Database connected', dbFail: 'Database connection failed',
+      dbBadUrl: 'Wrong URL, or the tables do not exist. Copy Project URL from Settings → API and run the SQL.',
+      dbBadKey: 'Key rejected. Use the sb_publishable_ key from Settings → API.',
+      dbNoTables: 'Tables missing — run the SQL in the Supabase SQL editor.',
+      dbNoNet: 'Supabase unreachable — check the connection.',
       dbMissing: 'Enter the Supabase URL and key first.',
       copySql: 'Copy SQL', useMemoryLbl: 'Use translation memory (repeats return instantly)',
       glossOpen: 'Glossary', glossTitle: 'Term glossary',
@@ -1146,8 +1158,6 @@
   // An earlier version auto-selected a reasoning model for translation; it costs a
   // second per sentence and sometimes returns nothing. Correct that choice once.
   (function fixSlowModel() {
-    if (S.modelFixed) return;
-    S.modelFixed = true;
     PROV_ORDER.forEach(id => {
       const m = String(S.models[id] || '');
       if (/gpt-oss|reasoner|thinking|-r1|qwq/i.test(m)) S.models[id] = PROVIDERS[id].def;
@@ -1356,15 +1366,40 @@
   try { const g = store.get(GLOSS_CACHE_KEY, []); if (Array.isArray(g)) glossary = g; } catch (_) {}
 
   function sbReady() { return !!(String(S.sbUrl || '').trim() && String(S.sbKey || '').trim()); }
-  function sbBase() { return String(S.sbUrl || '').trim().replace(/\/+$/, '') + '/rest/v1/'; }
+  // Accept whatever the user pasted and reduce it to the project origin.
+  function sbBase() {
+    let u = String(S.sbUrl || '').trim();
+    if (!u) return '';
+    u = u.replace(/\s+/g, '');
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+    try {
+      const parsed = new URL(u);
+      return parsed.origin + '/rest/v1/';
+    } catch (_) {
+      return u.replace(/\/+$/, '') + '/rest/v1/';
+    }
+  }
+
+  function dbErrorText(err) {
+    const code = err && err.code, st = err && err.status;
+    const d = String((err && err.detail) || (err && err.message) || '').toLowerCase();
+    if (code === 'NO_DB') return t('dbMissing');
+    if (st === 401 || st === 403 || /jwt|api key|apikey|unauthorized/.test(d)) return t('dbBadKey');
+    if (/does not exist|relation|schema cache/.test(d)) return t('dbNoTables');
+    if (st === 404) return t('dbBadUrl');
+    if (code === 'NETWORK' || code === 'TIMEOUT') return t('dbNoNet');
+    return (err && err.message) ? String(err.message).slice(0, 140) : t('dbFail');
+  }
 
   async function sbFetch(path, opts) {
     if (!sbReady()) { const e = new Error('NO_DB'); e.code = 'NO_DB'; throw e; }
     const o = opts || {};
     const ctl = new AbortController();
     const timer = setTimeout(() => { try { ctl.abort(); } catch (_) {} }, 12000);
+    const full = sbBase() + path;
+    if (!STT.dbLogged) { STT.dbLogged = true; dlog('db.base', sbBase()); }
     try {
-      const res = await fetch(sbBase() + path, {
+      const res = await fetch(full, {
         method: o.method || 'GET',
         headers: Object.assign({
           apikey: String(S.sbKey).trim(),
@@ -1406,7 +1441,7 @@
       renderGlossary();
     } catch (err) {
       dlog('db.glossary-error', String((err && err.message) || err).slice(0, 90));
-      if (!quiet) toast(t('dbFail') + ' — ' + providerErrorText(err), 'err', 6000);
+      if (!quiet) toast(t('dbFail') + ' — ' + dbErrorText(err), 'err', 7000);
     }
     return glossary;
   }
@@ -3515,7 +3550,7 @@
       dlog('db.test', { ok: true, rows: Array.isArray(rows) ? rows.length : 0 });
     } catch (err) {
       dlog('db.test', { ok: false, msg: String((err && err.message) || err).slice(0, 100) });
-      toast(t('dbFail') + ' — ' + providerErrorText(err), 'err', 7000);
+      toast(t('dbFail') + ' — ' + dbErrorText(err), 'err', 8000);
     } finally { if (btn) btn.disabled = false; }
   }
 
@@ -3763,7 +3798,7 @@
         await glossaryAdd(term, tr, $('gFrom').value, $('gTo').value, $('gNote').value.trim());
         $('gTerm').value = ''; $('gTrans').value = ''; $('gNote').value = '';
         toast(t('gAdded'), 'ok', 2400);
-      } catch (err) { toast(t('dbFail') + ' — ' + providerErrorText(err), 'err', 6000); }
+      } catch (err) { toast(t('dbFail') + ' — ' + dbErrorText(err), 'err', 7000); }
     });
     $('glossList').addEventListener('click', async (e) => {
       const b = e.target.closest('[data-gdel]');
