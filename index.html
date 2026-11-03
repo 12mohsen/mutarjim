@@ -548,6 +548,13 @@
         <input type="checkbox" id="vizToggle" class="!w-4 !h-4 accent-[var(--accent)]">
         <span data-i18n="vizLbl">إظهار مؤشر الموجة (أطفئه إذا لم يلتقط الميكروفون كلامك)</span>
       </label>
+      <label class="block text-xs font-extrabold mt-4 mb-1.5" for="micSel" data-i18n="micDevice">جهاز الميكروفون</label>
+      <div class="flex gap-2">
+        <select id="micSel" class="!text-sm"></select>
+        <button id="micRefresh" class="btn btn-icon shrink-0" title="تحديث القائمة"><span data-lucide="refresh-cw"></span></button>
+      </div>
+      <p class="text-[11px] dim mt-1.5" data-i18n="micDeviceHint">إن كان المتصفح يستمع لجهاز خاطئ فلن يصل أي صوت. اختر الجهاز الصحيح هنا.</p>
+
       <label class="block text-xs font-extrabold mt-4 mb-1.5" for="paceSel" data-i18n="paceLbl">سرعة الالتقاط</label>
       <select id="paceSel" class="!text-sm">
         <option value="fast" data-i18n="paceFast">سريع — يقطع بعد 0.4 ثانية صمت (للمحادثة الحيّة)</option>
@@ -593,7 +600,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.10.0';
+  const APP_VERSION = '1.11.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -700,6 +707,10 @@
       unclear: 'سمعتُ صوتًا لكن بلا كلام واضح — أعد بصوت أوضح.',
       dlogTitle: 'سجل التشخيص',
       micTest: 'اختبار الميكروفون (3 ثوانٍ)',
+      micDevice: 'جهاز الميكروفون', micDefault: 'الجهاز الافتراضي للمتصفح',
+      micDeviceHint: 'إن كان المتصفح يستمع لجهاز خاطئ فلن يصل أي صوت. اختر الجهاز الصحيح هنا.',
+      micDeviceSet: 'تم تغيير جهاز الميكروفون.',
+      micDead: 'الميكروفون يسلّم صمتًا تامًا — جرّب جهازًا آخر من الإعدادات، وتحقّق من إعدادات الصوت في ويندوز.',
       testRecording: 'جارٍ التسجيل 3 ثوانٍ — تكلّم الآن بصوت عادي…',
       testSilent: 'لم يصل أي صوت من الميكروفون. تحقّق من جهاز الإدخال المختار في المتصفح ومن كتم الصوت.',
       testOk: 'الميكروفون والتفريغ يعملان:',
@@ -788,6 +799,10 @@
       unclear: 'Ada suara tapi tidak ada ucapan jelas — coba lagi lebih jelas.',
       dlogTitle: 'Log diagnostik',
       micTest: 'Uji mikrofon (3 detik)',
+      micDevice: 'Perangkat mikrofon', micDefault: 'Perangkat bawaan peramban',
+      micDeviceHint: 'Jika peramban memakai perangkat yang salah, tidak ada suara yang masuk.',
+      micDeviceSet: 'Perangkat mikrofon diubah.',
+      micDead: 'Mikrofon mengirim keheningan total — coba perangkat lain di Pengaturan.',
       testRecording: 'Merekam 3 detik — bicara sekarang…',
       testSilent: 'Tidak ada suara dari mikrofon. Periksa perangkat input dan mute.',
       testOk: 'Mikrofon dan transkripsi bekerja:',
@@ -876,6 +891,10 @@
       unclear: 'Heard audio but no clear speech — try again more clearly.',
       dlogTitle: 'Diagnostic log',
       micTest: 'Test microphone (3s)',
+      micDevice: 'Microphone device', micDefault: 'Browser default device',
+      micDeviceHint: 'If the browser listens to the wrong device, no audio ever arrives.',
+      micDeviceSet: 'Microphone device changed.',
+      micDead: 'The microphone delivers pure silence — try another device in Settings.',
       testRecording: 'Recording 3 seconds — speak now…',
       testSilent: 'No audio reached the page. Check the input device and mute switch.',
       testOk: 'Microphone and transcription work:',
@@ -967,7 +986,7 @@
     theme: 'dark', uiLang: 'ar', src: 'auto', tgt: 'en',
     rate: 1, pitch: 1, provider: 'gemini', keys: {}, models: {},
     formal: false, autoSpeak: false, handsFree: false, twoWay: false, histView: 'list', viz: true,
-    sttEngine: 'auto', browserSttBroken: false, pace: 'fast', voices: {}
+    sttEngine: 'auto', browserSttBroken: false, pace: 'fast', micId: '', voices: {}
   };
   const S = Object.assign({}, DEFAULTS, store.get(LS_KEYS.settings, {}));
   if (!LANGS[S.src]) S.src = 'auto';
@@ -2475,6 +2494,41 @@
   function pace() { return PACE[S.pace] || PACE.fast; }
   const STT_MAX_MS = 7000;          // cut long speech mid-flow instead of making it wait
 
+  function micConstraints() {
+    const c = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+    if (S.micId) c.deviceId = { exact: S.micId };
+    return c;
+  }
+
+  async function listMics(force) {
+    const sel = $('micSel');
+    if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    try {
+      let devs = await navigator.mediaDevices.enumerateDevices();
+      let ins = devs.filter(d => d.kind === 'audioinput');
+      // labels stay blank until the page has been granted the microphone once
+      if (force && ins.length && !ins[0].label) {
+        try {
+          const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+          tmp.getTracks().forEach(tr => tr.stop());
+          devs = await navigator.mediaDevices.enumerateDevices();
+          ins = devs.filter(d => d.kind === 'audioinput');
+        } catch (_) {}
+      }
+      sel.innerHTML = '<option value="">' + esc(t('micDefault')) + '</option>';
+      ins.forEach((d, i) => {
+        const o = document.createElement('option');
+        o.value = d.deviceId;
+        o.textContent = d.label || (t('micDevice') + ' ' + (i + 1));
+        sel.appendChild(o);
+      });
+      if (S.micId && ins.some(d => d.deviceId === S.micId)) sel.value = S.micId; else sel.value = '';
+      dlog('mic.devices', { count: ins.length, labels: ins.map(d => (d.label || '?').slice(0, 24)).join(' | ') });
+    } catch (err) {
+      dlog('mic.devices-error', String(err && err.message).slice(0, 80));
+    }
+  }
+
   function providerCanSTT() {
     const P = curProv();
     return !!(P.sttUrl || P.kind === 'gemini');
@@ -2668,7 +2722,7 @@
 
     try {
       STT.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        audio: micConstraints()
       });
     } catch (err) {
       micStatus(t('micDenied'), true);
@@ -2695,6 +2749,7 @@
     source.connect(proc); proc.connect(STT.gain); STT.gain.connect(STT.ctx.destination);
 
     STT.buf = []; STT.silence = 0; STT.voiced = 0; STT.speaking = false; STT.paused = false;
+    STT.sinceStart = 0; STT.everHeard = false; STT.deadWarned = false;
     const frameMs = 4096 / STT.srcRate * 1000;
 
     // A fixed threshold fails in any real room: steady background noise reads as
@@ -2722,6 +2777,14 @@
 
       // live telemetry: without this there is no way to tell a quiet mic from a dead one
       STT.lvlMax = Math.max(STT.lvlMax || 0, rms);
+      STT.sinceStart = (STT.sinceStart || 0) + frameMs;
+      if (rms > 0.0008) STT.everHeard = true;
+      if (!STT.everHeard && !STT.deadWarned && STT.sinceStart > 4000) {
+        STT.deadWarned = true;
+        dlog('stt.dead', 'stream delivers digital silence');
+        micStatus(t('micDead'), true);
+        toast(t('micDead'), 'err', 10000);
+      }
       if (!STT.lvlAt || Date.now() - STT.lvlAt > 400) {
         STT.lvlAt = Date.now();
         const tag = $('levelTag');
@@ -2753,7 +2816,9 @@
     };
 
     STT.active = true; STT.starting = false;
-    dlog('stt.start', { rate: STT.srcRate, prov: curProv().id, model: curProv().sttModel || 'gemini-inline', pace: S.pace });
+    const tr0 = STT.stream.getAudioTracks()[0];
+    dlog('stt.start', { rate: STT.srcRate, prov: curProv().id, model: curProv().sttModel || 'gemini-inline', pace: S.pace,
+      device: (tr0 && tr0.label || '?').slice(0, 40), muted: !!(tr0 && tr0.muted) });
     micStatus(t('sttReady').replace('{p}', curProv().name), true);
     return true;
   }
@@ -2783,7 +2848,7 @@
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+          audio: micConstraints()
         });
       } catch (err) {
         dlog('test.mic-denied', String(err && err.name));
@@ -3080,7 +3145,7 @@
     });
 
     // settings
-    $('settingsBtn').addEventListener('click', () => { loadVoices(); syncProviderFields(); renderDlog(); openModal('setModal'); });
+    $('settingsBtn').addEventListener('click', () => { loadVoices(); syncProviderFields(); renderDlog(); listMics(false); openModal('setModal'); });
     // provider picker
     $('provList').addEventListener('change', (e) => {
       const r = e.target.closest('input[name="provider"]');
@@ -3129,6 +3194,12 @@
     });
     $('testApiBtn').addEventListener('click', testApi);
     $('micTestBtn').addEventListener('click', () => { userInteracted = true; micSelfTest(); });
+    $('micSel').addEventListener('change', (e) => {
+      S.micId = e.target.value; saveSettings();
+      toast(t('micDeviceSet'), 'ok', 2600);
+      if (STT.active) { sttStop(); sttStart(); }
+    });
+    $('micRefresh').addEventListener('click', () => listMics(true));
     $('dlogCopy').addEventListener('click', () => copyText(dlogText()));
     $('dlogClear').addEventListener('click', () => { DLOG.length = 0; renderDlog(); });
 
