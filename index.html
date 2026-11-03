@@ -240,6 +240,21 @@
   .hidden { display: none !important; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
+  /* ---------- mobile mic bar ---------- */
+  #mobileBar { display: none; }
+  @media (max-width: 768px) {
+    #mobileBar {
+      display: block; position: fixed; inset-inline: 0; bottom: 0; z-index: 70;
+      padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+      background: linear-gradient(to top, var(--bg-0) 55%, transparent);
+    }
+    .mb-inner { display: flex; align-items: center; gap: .75rem; padding: .6rem .75rem; border-radius: 20px; }
+    #mobileBar .mic-btn { width: 76px; height: 76px; }
+    #mobileBar .mic-btn svg.lucide { width: 32px; height: 32px; }
+    body { padding-bottom: 118px; }
+    #micRow { display: none !important; }      /* the bar replaces the in-card mic */
+  }
+
   @media (max-width: 640px) {
     .glass { border-radius: 18px; }
     .out-box, textarea { font-size: 1rem; }
@@ -257,6 +272,20 @@
 </div>
 
 <div id="toasts" aria-live="polite" aria-atomic="true"></div>
+
+<!-- ============ MOBILE MIC BAR ============ -->
+<div id="mobileBar" class="no-print" aria-hidden="false">
+  <div class="mb-inner glass">
+    <button id="micBtnM" class="mic-btn" aria-label="microphone"><span data-lucide="mic"></span></button>
+    <div class="grow min-w-0 start">
+      <div class="flex items-center gap-1.5 flex-wrap">
+        <button id="handsFreeBtnM" class="chip" type="button"><span data-lucide="zap"></span><span data-i18n="handsFree">محادثة مباشرة</span></button>
+        <button id="listenChipM" class="chip" type="button"><span data-lucide="ear"></span></button>
+      </div>
+      <p id="micStatusM" class="text-[11px] start font-latin hidden mt-1" style="color:var(--warn)"></p>
+    </div>
+  </div>
+</div>
 
 <div class="max-w-6xl mx-auto px-4 sm:px-6 py-5 sm:py-8">
 
@@ -352,7 +381,7 @@
       </div>
 
       <!-- mic + visualizer -->
-      <div class="glass-soft mt-4 p-3 flex items-center gap-3 no-print">
+      <div id="micRow" class="glass-soft mt-4 p-3 flex items-center gap-3 no-print">
         <button id="micBtn" class="mic-btn" title="تحدّث" aria-label="microphone">
           <span data-lucide="mic"></span>
         </button>
@@ -532,6 +561,9 @@
         <button id="fetchModelsBtn" class="btn btn-icon shrink-0" title="جلب الموديلات المتاحة لمفتاحك" data-i18n-title="fetchModels">
           <span data-lucide="refresh-cw"></span>
         </button>
+        <button id="fastModelBtn" class="btn btn-icon shrink-0" title="اختر أسرع موديل" data-i18n-title="fastModel">
+          <span data-lucide="zap"></span>
+        </button>
       </div>
       <datalist id="modelList"></datalist>
       <div id="modelPicks" class="flex flex-wrap gap-1.5 mt-2"></div>
@@ -600,7 +632,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.11.0';
+  const APP_VERSION = '1.12.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -710,6 +742,7 @@
       micDevice: 'جهاز الميكروفون', micDefault: 'الجهاز الافتراضي للمتصفح',
       micDeviceHint: 'إن كان المتصفح يستمع لجهاز خاطئ فلن يصل أي صوت. اختر الجهاز الصحيح هنا.',
       micDeviceSet: 'تم تغيير جهاز الميكروفون.',
+      fastModel: 'اختر أسرع موديل', fastModelSet: 'تم اختيار {m} — الأسرع المتاح.',
       micDead: 'الميكروفون يسلّم صمتًا تامًا — جرّب جهازًا آخر من الإعدادات، وتحقّق من إعدادات الصوت في ويندوز.',
       testRecording: 'جارٍ التسجيل 3 ثوانٍ — تكلّم الآن بصوت عادي…',
       testSilent: 'لم يصل أي صوت من الميكروفون. تحقّق من جهاز الإدخال المختار في المتصفح ومن كتم الصوت.',
@@ -802,6 +835,7 @@
       micDevice: 'Perangkat mikrofon', micDefault: 'Perangkat bawaan peramban',
       micDeviceHint: 'Jika peramban memakai perangkat yang salah, tidak ada suara yang masuk.',
       micDeviceSet: 'Perangkat mikrofon diubah.',
+      fastModel: 'Pilih model tercepat', fastModelSet: '{m} dipilih — tercepat yang tersedia.',
       micDead: 'Mikrofon mengirim keheningan total — coba perangkat lain di Pengaturan.',
       testRecording: 'Merekam 3 detik — bicara sekarang…',
       testSilent: 'Tidak ada suara dari mikrofon. Periksa perangkat input dan mute.',
@@ -894,6 +928,7 @@
       micDevice: 'Microphone device', micDefault: 'Browser default device',
       micDeviceHint: 'If the browser listens to the wrong device, no audio ever arrives.',
       micDeviceSet: 'Microphone device changed.',
+      fastModel: 'Pick the fastest model', fastModelSet: '{m} selected — the fastest available.',
       micDead: 'The microphone delivers pure silence — try another device in Settings.',
       testRecording: 'Recording 3 seconds — speak now…',
       testSilent: 'No audio reached the page. Check the input device and mute switch.',
@@ -2141,10 +2176,12 @@
   let lastResultAt = 0, watchdog = null, vizBlamed = false;
 
   function micStatus(msg, show) {
-    const el = $('micStatus');
-    if (!el) return;
-    el.textContent = msg || '';
-    el.classList.toggle('hidden', !show || !msg);
+    ['micStatus', 'micStatusM'].forEach(id => {
+      const el = $(id);
+      if (!el) return;
+      el.textContent = msg || '';
+      el.classList.toggle('hidden', !show || !msg);
+    });
   }
 
   // The recognizer can run while silently returning nothing — usually because
@@ -2219,12 +2256,13 @@
   function setHandsFree(on) {
     S.handsFree = !!on;
     saveSettings();
-    const b = $('handsFreeBtn');
-    if (b) {
+    ['handsFreeBtn', 'handsFreeBtnM'].forEach(id => {
+      const b = $(id);
+      if (!b) return;
       b.className = 'chip' + (S.handsFree ? ' chip-accent' : '');
       b.style.cursor = 'pointer';
       b.setAttribute('aria-pressed', S.handsFree ? 'true' : 'false');
-    }
+    });
     if (!S.handsFree) { clearTimeout(handsFreeTimer); lastSpoken = ''; }
     if (!recognizing) setMicUI(false);
   }
@@ -2232,8 +2270,14 @@
   let audioCtx = null, analyser = null, micStream = null, vizRAF = null, dataArr = null;
 
   function setMicUI(on) {
-    const btn = $('micBtn'), hint = $('micHint'), lab = $('interimLabel');
-    if (btn) { btn.classList.toggle('rec', on); btn.innerHTML = '<span data-lucide="' + (on ? 'square' : 'mic') + '"></span>'; }
+    const hint = $('micHint'), lab = $('interimLabel');
+    ['micBtn', 'micBtnM'].forEach(id => {
+      const b = $(id);
+      if (!b) return;
+      b.classList.toggle('rec', on);
+      b.innerHTML = '<span data-lucide="' + (on ? 'square' : 'mic') + '"></span>';
+    });
+    if (on) acquireWake(); else releaseWake();
     if (hint) hint.textContent = on
       ? (S.handsFree ? t('micRecAuto') : t('micRec'))
       : (recogSupported ? (S.handsFree ? t('micIdleAuto') : t('micIdle')) : t('micOff'));
@@ -2265,14 +2309,16 @@
   }
 
   function updateListenChip() {
-    const chip = $('listenChip');
-    if (!chip) return;
     const code = currentListenLang();
-    chip.innerHTML = '<span data-lucide="ear"></span>' +
-      esc(t('listeningIn') + ': ' + LANGS[code].flag + ' ' + langName(code));
-    chip.className = 'chip' + (S.twoWay ? ' chip-accent' : '');
-    chip.style.cursor = S.twoWay ? 'pointer' : 'default';
-    chip.title = S.twoWay ? t('flipListen') : '';
+    ['listenChip', 'listenChipM'].forEach(id => {
+      const chip = $(id);
+      if (!chip) return;
+      chip.innerHTML = '<span data-lucide="ear"></span>' +
+        esc(t('listeningIn') + ': ' + LANGS[code].flag + ' ' + langName(code));
+      chip.className = 'chip' + (S.twoWay ? ' chip-accent' : '');
+      chip.style.cursor = S.twoWay ? 'pointer' : 'default';
+      chip.title = S.twoWay ? t('flipListen') : '';
+    });
     icons();
   }
 
@@ -2939,6 +2985,17 @@
     return !recogSupported || !!S.browserSttBroken;     // auto
   }
 
+  let wakeLock = null;
+  async function acquireWake() {
+    try {
+      if (!wakeLock && navigator.wakeLock && navigator.wakeLock.request) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }
+    } catch (_) { /* unsupported or denied: the app still works */ }
+  }
+  function releaseWake() { try { if (wakeLock) wakeLock.release(); } catch (_) {} wakeLock = null; }
+
   async function toggleMic() {
     userInteracted = true;
 
@@ -3093,6 +3150,9 @@
     // actions
     $('translateBtn').addEventListener('click', () => { userInteracted = true; doTranslate(); });
     $('micBtn').addEventListener('click', toggleMic);
+    $('micBtnM').addEventListener('click', toggleMic);
+    $('listenChipM').addEventListener('click', () => $('listenChip').click());
+    $('handsFreeBtnM').addEventListener('click', () => $('handsFreeBtn').click());
     $('listenChip').addEventListener('click', () => {
       if (!S.twoWay) { toast(t('flipNeedsTwoWay'), 'warn', 3000); return; }
       setListenLang(currentListenLang() === S.src ? S.tgt : S.src, true);
@@ -3174,6 +3234,16 @@
     model.addEventListener('change', onModel);
     model.addEventListener('blur', onModel);
     $('fetchModelsBtn').addEventListener('click', loadProviderModels);
+    $('fastModelBtn').addEventListener('click', () => {
+      const P = curProv();
+      const pool = (liveModels[P.id] && liveModels[P.id].length) ? liveModels[P.id] : P.models;
+      const fastest = pool.slice().sort((a, b) => modelScore(P, a) - modelScore(P, b))[0];
+      if (!fastest) return;
+      S.models[P.id] = fastest; saveSettings();
+      model.value = fastest;
+      renderModelList(pool); renderProviders(); updateEngineChip();
+      toast(t('fastModelSet').replace('{m}', fastest), 'ok', 3000);
+    });
     const formal = $('formalTone'); formal.checked = !!S.formal;
     formal.addEventListener('change', () => { S.formal = formal.checked; saveSettings(); });
     const autoSp = $('autoSpeak'); autoSp.checked = !!S.autoSpeak;
