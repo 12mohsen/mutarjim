@@ -2350,10 +2350,38 @@
   };
   const STT_TARGET_RATE = 16000;
   const PACE = {                    // how long a pause has to be before we cut
-    fast:     { silence: 420,  minVoiced: 260 },
-    balanced: { silence: 750,  minVoiced: 350 },
-    accurate: { silence: 1200, minVoiced: 450 }
+    fast:     { silence: 420,  minVoiced: 450 },
+    balanced: { silence: 750,  minVoiced: 520 },
+    accurate: { silence: 1200, minVoiced: 600 }
   };
+
+  // Whisper was trained on subtitle files, so on short or near-silent audio it
+  // "remembers" translator credits and channel plugs. Never let those through.
+  const HALLUCINATIONS = [
+    /نانسي\s*قنقر/i,
+    /^ترجمة\s+(نانسي|فريق|قناة|مركز|مؤسسة|موقع)/,
+    /^(اشترك|اشتركوا|تابعونا|لا\s*تنسوا|لا\s*تنسى)\b/,
+    /^شكرا\s+(جزيلا\s+)?(لكم\s+)?(على\s+)?(المشاهدة|المتابعة)/,
+    /amara\.org|opensubtitles|subscene|addic7ed/i,
+    /^(subtitles?|subs)\b.{0,20}\b(by|provided|created)/i,
+    /^thank(s| you) for watching/i,
+    /^(terima kasih telah menonton|jangan lupa subscribe)/i,
+    /^[\s.،,!?؟-]*$/,
+    /^[♪♫\s]+$/
+  ];
+
+  function cleanTranscript(raw) {
+    let s = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    for (const re of HALLUCINATIONS) if (re.test(s)) return '';
+    // a single token repeated over and over is also a hallucination loop
+    const w = s.split(' ');
+    if (w.length >= 6) {
+      const uniq = new Set(w.map(x => x.toLowerCase()));
+      if (uniq.size <= 2) return '';
+    }
+    return s;
+  }
   function pace() { return PACE[S.pace] || PACE.fast; }
   const STT_MAX_MS = 7000;          // cut long speech mid-flow instead of making it wait
 
@@ -2405,7 +2433,8 @@
       const fd = new FormData();
       fd.append('file', blob, 'speech.wav');
       fd.append('model', P.sttModel);
-      fd.append('response_format', 'json');
+      fd.append('response_format', 'verbose_json');   // gives per-segment confidence
+      fd.append('temperature', '0');
       if (S.twoWay || S.src !== 'auto') {
         const hint = S.twoWay ? currentListenLang() : S.src;
         if (LANGS[hint] && hint !== 'auto') fd.append('language', hint);
@@ -2416,7 +2445,17 @@
         throw httpError(res.status, d);
       }
       const j = await res.json();
-      return String((j && j.text) || '').trim();
+
+      // keep only segments the model was actually confident about
+      if (j && Array.isArray(j.segments) && j.segments.length) {
+        const good = j.segments.filter(sg =>
+          (sg.no_speech_prob === undefined || sg.no_speech_prob < 0.5) &&
+          (sg.avg_logprob === undefined || sg.avg_logprob > -0.9) &&
+          (sg.compression_ratio === undefined || sg.compression_ratio < 2.4));
+        if (!good.length) return '';
+        return cleanTranscript(good.map(sg => sg.text || '').join(' '));
+      }
+      return cleanTranscript((j && j.text) || '');
     }
 
     if (P.kind === 'gemini') {   // Gemini reads the audio inline, no separate endpoint
@@ -2439,7 +2478,7 @@
       );
       const cand = data && data.candidates && data.candidates[0];
       const parts = (cand && cand.content && cand.content.parts) || [];
-      return parts.map(p => (p && p.text) || '').join('').trim();
+      return cleanTranscript(parts.map(p => (p && p.text) || '').join(''));
     }
 
     const e = new Error('NO_STT'); e.code = 'NO_STT'; throw e;
@@ -2456,10 +2495,23 @@
     const t0 = Date.now();
     try {
       const pcm = downsample(chunks, STT.srcRate, STT_TARGET_RATE);
+
+      // never ship near-silence: that is exactly what makes Whisper invent text
+      let peak = 0, energy = 0;
+      for (let i = 0; i < pcm.length; i++) {
+        const a = Math.abs(pcm[i]);
+        if (a > peak) peak = a;
+        energy += pcm[i] * pcm[i];
+      }
+      const rms = Math.sqrt(energy / Math.max(1, pcm.length));
+      if (peak < 0.05 || rms < 0.006) { micStatus('', false); return; }
+
       const text = await transcribeBlob(encodeWav(pcm, STT_TARGET_RATE));
       const tHeard = Date.now() - t0;
       micStatus('', false);
       if (!text) return;
+      if (text === STT.lastText) return;          // same clip transcribed twice
+      STT.lastText = text;
 
       const ta = $('inputText');
       if (ta) {
