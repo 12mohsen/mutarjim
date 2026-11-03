@@ -279,7 +279,10 @@
       </div>
       <div class="min-w-0 start">
         <h1 class="text-lg sm:text-xl font-extrabold leading-tight truncate" data-i18n="appTitle">المترجم الذكي</h1>
-        <p class="text-xs muted truncate" data-i18n="appSub">عربي · إندونيسي · إنجليزي — صوت ونص مع كشف تلقائي</p>
+        <p class="text-xs muted truncate">
+        <span data-i18n="appSub">عربي · إندونيسي · إنجليزي — صوت ونص مع كشف تلقائي</span>
+        <span id="verTag" class="font-latin dim"></span>
+      </p>
       </div>
     </div>
 
@@ -574,6 +577,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
+  const APP_VERSION = '1.7.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -676,7 +680,8 @@
       paceLbl: 'سرعة الالتقاط', paceSet: 'تم تغيير سرعة الالتقاط.',
       paceFast: 'سريع — يقطع بعد 0.4 ثانية صمت (للمحادثة الحيّة)',
       paceBalanced: 'متوازن — 0.75 ثانية', paceAccurate: 'دقيق — 1.2 ثانية (جمل طويلة)',
-      heard: 'سمع', translated: 'ترجم',
+      heard: 'سمع', translated: 'ترجم', diagVersion: 'إصدار التطبيق',
+      unclear: 'سمعتُ صوتًا لكن بلا كلام واضح — أعد بصوت أوضح.',
       micOff: 'التعرّف على الصوت غير مدعوم في هذا المتصفح — استخدم Chrome أو Edge.',
       voiceCtl: 'إعدادات الصوت', voice: 'الصوت', rate: 'السرعة', pitch: 'النبرة',
       histTitle: 'سجل المحادثة', histEmpty: 'لا توجد ترجمات محفوظة بعد.',
@@ -756,7 +761,8 @@
       paceLbl: 'Kecepatan tangkap', paceSet: 'Kecepatan tangkap diubah.',
       paceFast: 'Cepat — potong setelah 0,4 detik hening (percakapan langsung)',
       paceBalanced: 'Seimbang — 0,75 detik', paceAccurate: 'Akurat — 1,2 detik (kalimat panjang)',
-      heard: 'dengar', translated: 'terjemah',
+      heard: 'dengar', translated: 'terjemah', diagVersion: 'Versi aplikasi',
+      unclear: 'Ada suara tapi tidak ada ucapan jelas — coba lagi lebih jelas.',
       micOff: 'Pengenalan suara tidak didukung di peramban ini — gunakan Chrome atau Edge.',
       voiceCtl: 'Pengaturan Suara', voice: 'Suara', rate: 'Kecepatan', pitch: 'Nada',
       histTitle: 'Riwayat', histEmpty: 'Belum ada terjemahan tersimpan.',
@@ -836,7 +842,8 @@
       paceLbl: 'Capture speed', paceSet: 'Capture speed changed.',
       paceFast: 'Fast — cuts after 0.4s of silence (live conversation)',
       paceBalanced: 'Balanced — 0.75s', paceAccurate: 'Accurate — 1.2s (long sentences)',
-      heard: 'heard', translated: 'translated',
+      heard: 'heard', translated: 'translated', diagVersion: 'App version',
+      unclear: 'Heard audio but no clear speech — try again more clearly.',
       micOff: 'Speech recognition is not supported in this browser — use Chrome or Edge.',
       voiceCtl: 'Voice Settings', voice: 'Voice', rate: 'Rate', pitch: 'Pitch',
       histTitle: 'History', histEmpty: 'No saved translations yet.',
@@ -2350,9 +2357,9 @@
   };
   const STT_TARGET_RATE = 16000;
   const PACE = {                    // how long a pause has to be before we cut
-    fast:     { silence: 420,  minVoiced: 450 },
-    balanced: { silence: 750,  minVoiced: 520 },
-    accurate: { silence: 1200, minVoiced: 600 }
+    fast:     { silence: 420,  minVoiced: 300 },
+    balanced: { silence: 750,  minVoiced: 380 },
+    accurate: { silence: 1200, minVoiced: 450 }
   };
 
   // Whisper was trained on subtitle files, so on short or near-silent audio it
@@ -2369,6 +2376,12 @@
     /^[\s.،,!?؟-]*$/,
     /^[♪♫\s]+$/
   ];
+
+  const STT_PROMPT = {
+    ar: 'محادثة قصيرة وعادية بين شخصين. جمل قصيرة مثل: شكرًا. نعم. كيف حالك؟',
+    id: 'Percakapan singkat sehari-hari antara dua orang. Kalimat pendek seperti: Terima kasih. Ya. Apa kabar?',
+    en: 'A short everyday conversation between two people. Short sentences like: Thank you. Yes. How are you?'
+  };
 
   function cleanTranscript(raw) {
     let s = String(raw || '').replace(/\s+/g, ' ').trim();
@@ -2435,9 +2448,11 @@
       fd.append('model', P.sttModel);
       fd.append('response_format', 'verbose_json');   // gives per-segment confidence
       fd.append('temperature', '0');
-      if (S.twoWay || S.src !== 'auto') {
-        const hint = S.twoWay ? currentListenLang() : S.src;
-        if (LANGS[hint] && hint !== 'auto') fd.append('language', hint);
+      const hint = S.twoWay ? currentListenLang() : (S.src !== 'auto' ? S.src : '');
+      if (LANGS[hint] && hint !== 'auto') {
+        fd.append('language', hint);
+        // steer the model toward plain conversation instead of subtitle credits
+        fd.append('prompt', STT_PROMPT[hint] || STT_PROMPT.en);
       }
       const res = await fetch(P.sttUrl, { method: 'POST', headers: { Authorization: 'Bearer ' + key }, body: fd });
       if (!res.ok) {
@@ -2509,7 +2524,7 @@
       const text = await transcribeBlob(encodeWav(pcm, STT_TARGET_RATE));
       const tHeard = Date.now() - t0;
       micStatus('', false);
-      if (!text) return;
+      if (!text) { micStatus(t('unclear'), true); return; }
       if (text === STT.lastText) return;          // same clip transcribed twice
       STT.lastText = text;
 
@@ -2711,7 +2726,8 @@
       [t('diagTTS'), synth ? t('yes') : t('no'), !!synth],
       [t('diagLS'), lsOK ? t('yes') : t('no'), lsOK],
       [t('diagVoices'), String(voicesCache.length), voicesCache.length > 0],
-      [t('diagKey') + ' · ' + curProv().name, curKey() ? t('set') : t('unset'), !!curKey()]
+      [t('diagKey') + ' · ' + curProv().name, curKey() ? t('set') : t('unset'), !!curKey()],
+      [t('diagVersion'), 'v' + APP_VERSION, true]
     ];
     ul.innerHTML = rows.map(r =>
       '<li class="flex items-center justify-between gap-2">' +
@@ -2925,6 +2941,7 @@
     renderHistory();
     renderDiag();
     syncProviderFields();
+    const vt = $('verTag'); if (vt) vt.textContent = ' · v' + APP_VERSION;
     icons();
 
     if (synth && typeof synth.onvoiceschanged !== 'undefined') {
