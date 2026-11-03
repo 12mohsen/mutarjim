@@ -4,7 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="description" content="مترجم فوري بالصوت والنص بين العربية والإندونيسية والإنجليزية مع كشف تلقائي للغة">
-<meta name="theme-color" content="#0b1020">
+<meta name="theme-color" content="#070a18">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="المترجم">
+<meta name="mobile-web-app-capable" content="yes">
 <title>المترجم الذكي · Penerjemah · Translator</title>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -326,6 +332,9 @@
       </select>
       <button id="themeBtn" class="btn btn-icon" title="الوضع الليلي/النهاري" aria-label="theme">
         <span data-lucide="moon"></span>
+      </button>
+      <button id="installBtn" class="btn btn-icon hidden" title="تثبيت التطبيق" data-i18n-title="install" aria-label="install">
+        <span data-lucide="download"></span>
       </button>
       <button id="settingsBtn" class="btn btn-icon" title="الإعدادات" aria-label="settings">
         <span data-lucide="settings"></span>
@@ -698,7 +707,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.20.0';
+  const APP_VERSION = '1.21.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -821,6 +830,8 @@
       copySql: 'نسخ أوامر SQL', useMemoryLbl: 'استخدام ذاكرة الترجمة (إرجاع فوري للجمل المتكررة)',
       glossOpen: 'القاموس', glossTitle: 'قاموس المصطلحات',
       memStored: 'جُمل محفوظة في القاعدة', syncHist: 'ارفع المحادثات',
+      install: 'تثبيت التطبيق على الجوال', installed: 'تم تثبيت التطبيق — ستجده بين تطبيقاتك.',
+      installHow: 'من قائمة المتصفح (⋮) اختر «تثبيت التطبيق» أو «إضافة إلى الشاشة الرئيسية».',
       syncing: 'جارٍ الرفع {n}/{m}…',
       syncDone: 'تم رفع {n} جملة إلى القاعدة (تم تجاهل {d} مكرّرة).',
       glossEmpty: 'القاموس فارغ — أضف الكلمات التي تُترجم خطأً.',
@@ -936,6 +947,8 @@
       copySql: 'Salin perintah SQL', useMemoryLbl: 'Pakai memori terjemahan (kalimat berulang langsung)',
       glossOpen: 'Glosarium', glossTitle: 'Glosarium istilah',
       memStored: 'Kalimat tersimpan di basis data', syncHist: 'Unggah percakapan',
+      install: 'Pasang aplikasi', installed: 'Aplikasi terpasang.',
+      installHow: 'Dari menu peramban (⋮) pilih «Pasang aplikasi» atau «Tambahkan ke layar utama».',
       syncing: 'Mengunggah {n}/{m}…',
       syncDone: '{n} kalimat diunggah ({d} duplikat dilewati).',
       glossEmpty: 'Glosarium kosong — tambahkan kata yang salah diterjemahkan.',
@@ -1051,6 +1064,8 @@
       copySql: 'Copy SQL', useMemoryLbl: 'Use translation memory (repeats return instantly)',
       glossOpen: 'Glossary', glossTitle: 'Term glossary',
       memStored: 'Sentences stored in the database', syncHist: 'Upload conversations',
+      install: 'Install the app', installed: 'App installed.',
+      installHow: 'From the browser menu (⋮) choose "Install app" or "Add to Home screen".',
       syncing: 'Uploading {n}/{m}…',
       syncDone: '{n} sentences uploaded ({d} duplicates skipped).',
       glossEmpty: 'The glossary is empty — add the words that come out wrong.',
@@ -3978,6 +3993,46 @@
     if (!lsOK) toast(t('lsOff'), 'warn', 5200);
     if (!recogSupported) { const b = $('micBtn'); if (b) { b.disabled = true; b.title = t('micOff'); } }
     if (!curKey()) setTimeout(() => openModal('setModal'), 500);
+
+    // ---- installable app (works on https only; a local file has no origin) ----
+    // localhost counts as secure too, so a local server behaves like the real site
+    if ('serviceWorker' in navigator && window.isSecureContext && location.protocol !== 'file:') {
+      navigator.serviceWorker.register('sw.js').then(
+        reg => dlog('pwa.sw', { scope: reg.scope }),
+        err => dlog('pwa.sw-error', String(err && err.message).slice(0, 80))
+      );
+    }
+
+    let installPrompt = null;
+    const installBtn = $('installBtn');
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      installPrompt = e;
+      if (installBtn) installBtn.classList.remove('hidden');
+      dlog('pwa.installable', true);
+    });
+    if (installBtn) {
+      installBtn.addEventListener('click', async () => {
+        if (!installPrompt) { toast(t('installHow'), 'warn', 7000); return; }
+        installPrompt.prompt();
+        try {
+          const res = await installPrompt.userChoice;
+          dlog('pwa.choice', res && res.outcome);
+        } catch (_) {}
+        installPrompt = null;
+        installBtn.classList.add('hidden');
+      });
+    }
+    window.addEventListener('appinstalled', () => {
+      if (installBtn) installBtn.classList.add('hidden');
+      toast(t('installed'), 'ok', 4000);
+      dlog('pwa.installed', true);
+    });
+    // already running from the home screen
+    if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) {
+      if (installBtn) installBtn.classList.add('hidden');
+      dlog('pwa.standalone', true);
+    }
 
     window.addEventListener('error', (e) => { try { console.error('[app]', e.message); } catch (_) {} });
     window.addEventListener('unhandledrejection', (e) => { try { console.error('[app:promise]', e.reason); } catch (_) {} });
