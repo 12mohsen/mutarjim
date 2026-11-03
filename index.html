@@ -589,7 +589,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.8.0';
+  const APP_VERSION = '1.9.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -1327,7 +1327,7 @@
   }
 
   // OpenAI-compatible chat completions: OpenAI, DeepSeek and Groq all speak it
-  async function callChatAPI(P, model, key, prompt, pid, plain, budget) {
+  async function callChatAPI(P, model, key, prompt, pid, plain, budget, thinks) {
     const qk = pid + '|' + model;
     const q = quirks[qk] || (quirks[qk] = {});
 
@@ -1345,6 +1345,7 @@
       const cap = budget || 4096;
       if (q.maxCompletion) b.max_completion_tokens = cap; else b.max_tokens = cap;
       if (!plain && !q.noJson) b.response_format = { type: 'json_object' };
+      if (thinks && !q.noEffort) b.reasoning_effort = 'low';   // answer, don't deliberate
       return b;
     }
 
@@ -1363,6 +1364,7 @@
         if (!plain && !q.noJson && (d.indexOf('response_format') >= 0 || d.indexOf('json_object') >= 0 || d.indexOf('json mode') >= 0)) { q.noJson = true; fixed = true; }
         if (!q.maxCompletion && d.indexOf('max_tokens') >= 0 && d.indexOf('max_completion_tokens') >= 0) { q.maxCompletion = true; fixed = true; }
         if (!q.noTemp && d.indexOf('temperature') >= 0) { q.noTemp = true; fixed = true; }
+        if (!q.noEffort && d.indexOf('reasoning_effort') >= 0) { q.noEffort = true; fixed = true; }
         if (!fixed) throw err;
         saveQuirks();
       }
@@ -1376,6 +1378,10 @@
     if (!out && Array.isArray(msg.content)) {
       out = msg.content.map(c => (c && typeof c.text === 'string') ? c.text : '').join('');
     }
+    // some reasoning models put the answer in a channel of its own
+    if (!out && typeof msg.reasoning === 'string') out = msg.reasoning;
+    if (!out && typeof msg.reasoning_content === 'string') out = msg.reasoning_content;
+    if (!out) dlog('chat.empty', { model: model, finish: choice.finish_reason || '?', keys: Object.keys(msg).join(',') });
     return out;
   }
 
@@ -1426,6 +1432,7 @@
     if (k >= 0) return k;                                   // our curated picks first
     let s = 100;
     if (/mini|flash|instant|small|lite|8b/i.test(id)) s -= 20;   // fast + cheap suits translation
+    if (/gpt-oss|reasoner|thinking|-r1|qwq|^o[1345]/i.test(id)) s += 40;   // thinking costs latency
     if (/preview|exp|beta|alpha|nightly|\d{4}-\d{2}-\d{2}|-\d{4}$/i.test(id)) s += 15;
     return s;
   }
@@ -1448,11 +1455,15 @@
     if (!key) { const e = new Error('NO_KEY'); e.code = 'NO_KEY'; e.provider = pid; throw e; }
     const model = String(modelOverride || (S.models && S.models[pid]) || P.def).trim() || P.def;
     const prompt = buildPrompt(text, from, to, plain);
-    const budget = Math.max(256, Math.min(4096, Math.ceil(String(text).length * 3) + 128));
+    // Reasoning models (gpt-oss, o-series, deepseek-reasoner) spend tokens thinking
+    // before they write a word, so a tight budget makes them return nothing at all.
+    const thinks = /gpt-oss|^o[1345]|reasoner|thinking|-r1|qwq/i.test(model);
+    const need = Math.ceil(String(text).length * 3) + 128;
+    const budget = thinks ? Math.max(2048, Math.min(8192, need * 4)) : Math.max(512, Math.min(4096, need));
 
     const raw = P.kind === 'gemini'
       ? await callGeminiAPI(P, model, key, prompt, plain, budget)
-      : await callChatAPI(P, model, key, prompt, pid, plain, budget);
+      : await callChatAPI(P, model, key, prompt, pid, plain, budget, thinks);
 
     const out = parseModelText(raw, pid);
     if (plain) { out.detected = from; }
@@ -2495,11 +2506,11 @@
       fd.append('model', P.sttModel);
       fd.append('response_format', 'verbose_json');   // gives per-segment confidence
       fd.append('temperature', '0');
-      const hint = S.twoWay ? currentListenLang() : (S.src !== 'auto' ? S.src : '');
-      if (LANGS[hint] && hint !== 'auto') {
-        fd.append('language', hint);
-        // steer the model toward plain conversation instead of subtitle credits
-        fd.append('prompt', STT_PROMPT[hint] || STT_PROMPT.en);
+      // In a dialogue either side may speak next, so forcing a language turns the
+      // other speaker into gibberish. Let Whisper detect it; the direction follows.
+      if (!S.twoWay && S.src !== 'auto' && LANGS[S.src]) {
+        fd.append('language', S.src);
+        fd.append('prompt', STT_PROMPT[S.src] || STT_PROMPT.en);
       }
       const res = await fetch(P.sttUrl, { method: 'POST', headers: { Authorization: 'Bearer ' + key }, body: fd });
       if (!res.ok) {
@@ -2514,12 +2525,19 @@
       // words legitimately score poorly, so a filtered-out result still falls
       // back to the full text rather than silently losing real speech.
       if (j && Array.isArray(j.segments) && j.segments.length) {
-        const good = j.segments.filter(sg =>
-          (sg.no_speech_prob === undefined || sg.no_speech_prob < 0.85) &&
-          (sg.avg_logprob === undefined || sg.avg_logprob > -1.4) &&
-          (sg.compression_ratio === undefined || sg.compression_ratio < 2.6));
+        // no_speech_prob is the reliable signal. A poor avg_logprob alone is normal
+        // for short words, so it only disqualifies a segment that also looks silent.
+        const good = j.segments.filter(sg => {
+          const nsp = sg.no_speech_prob === undefined ? 0 : sg.no_speech_prob;
+          const lp = sg.avg_logprob === undefined ? 0 : sg.avg_logprob;
+          const cr = sg.compression_ratio === undefined ? 1 : sg.compression_ratio;
+          if (nsp > 0.85) return false;
+          if (lp < -1.4 && nsp > 0.4) return false;
+          if (cr > 2.6) return false;
+          return true;
+        });
         const picked = cleanTranscript(good.map(sg => sg.text || '').join(' '));
-        dlog('stt.segments', { total: j.segments.length, kept: good.length,
+        dlog('stt.segments', { total: j.segments.length, kept: good.length, lang: j.language || '?',
           nsp: j.segments.map(sg => Number(sg.no_speech_prob || 0).toFixed(2)).join(','),
           lp: j.segments.map(sg => Number(sg.avg_logprob || 0).toFixed(2)).join(',') });
         if (picked) return picked;
@@ -2620,13 +2638,14 @@
   }
 
   function sttPause() { STT.speaking = false; STT.buf = []; STT.voiced = 0; STT.paused = true; }
-  function sttResume() { STT.paused = false; STT.buf = []; STT.voiced = 0; STT.silence = 0; }
+  function sttResume() { STT.paused = false; STT.buf = []; STT.voiced = 0; STT.silence = 0; STT.speaking = false; STT.calibrating = 6; }
 
   async function sttStart() {
-    if (STT.active) return true;
+    if (STT.active || STT.starting) return true;
+    STT.starting = true;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { micStatus(t('micOff'), true); return false; }
-    if (!providerCanSTT()) { micStatus(t('sttUnsupported').replace('{p}', curProv().name), true); return false; }
-    if (!curKey()) { micStatus(t('apiMissing'), true); return false; }
+    if (!providerCanSTT()) { micStatus(t('sttUnsupported').replace('{p}', curProv().name), true); STT.starting = false; return false; }
+    if (!curKey()) { micStatus(t('apiMissing'), true); STT.starting = false; return false; }
 
     try {
       STT.stream = await navigator.mediaDevices.getUserMedia({
@@ -2634,6 +2653,7 @@
       });
     } catch (err) {
       micStatus(t('micDenied'), true);
+      STT.starting = false;
       return false;
     }
 
@@ -2658,6 +2678,10 @@
     STT.buf = []; STT.silence = 0; STT.voiced = 0; STT.speaking = false; STT.paused = false;
     const frameMs = 4096 / STT.srcRate * 1000;
 
+    // A fixed threshold fails in any real room: steady background noise reads as
+    // speech, so the clip never ends on a pause. Learn the room's floor instead.
+    STT.floor = 0.05; STT.calibrating = 12;       // ~1s of frames to find the room's quietest level
+
     proc.onaudioprocess = (ev) => {
       if (!STT.active || STT.paused) return;
       const input = ev.inputBuffer.getChannelData(0);
@@ -2665,25 +2689,45 @@
       for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
       const rms = Math.sqrt(sum / input.length);
 
-      if (rms > 0.012) {                           // voice
+      // The floor is the QUIETEST level seen, not the average — otherwise starting
+      // the mic mid-sentence calibrates on speech and the app goes deaf.
+      if (STT.calibrating > 0) {
+        STT.floor = Math.min(STT.floor, rms);
+        STT.calibrating--;
+        if (STT.calibrating === 0) {
+          STT.floor = Math.max(0.003, Math.min(0.05, STT.floor));
+          dlog('stt.floor', { floor: STT.floor.toFixed(4) });
+        }
+        return;
+      }
+
+      const onLevel = Math.max(0.018, STT.floor * 3.5);   // must clearly beat the room
+      const offLevel = Math.max(0.010, STT.floor * 1.8);  // hysteresis: quieter to stay in
+
+      if (rms > (STT.speaking ? offLevel : onLevel)) {
         STT.speaking = true; STT.silence = 0; STT.voiced += frameMs;
         STT.buf.push(new Float32Array(input));
       } else if (STT.speaking) {                   // trailing quiet: keep it, it ends words cleanly
         STT.silence += frameMs;
         STT.buf.push(new Float32Array(input));
         if (STT.silence >= pace().silence) { STT.speaking = false; STT.silence = 0; sttFlush(); }
+      } else {
+        // track a drifting room: fall to new quiet quickly, rise only grudgingly
+        STT.floor = rms < STT.floor
+          ? STT.floor * 0.90 + rms * 0.10
+          : Math.min(0.05, STT.floor * 0.999 + rms * 0.001);
       }
       if (STT.voiced >= STT_MAX_MS) { STT.speaking = false; STT.silence = 0; sttFlush(); }
     };
 
-    STT.active = true;
+    STT.active = true; STT.starting = false;
     dlog('stt.start', { rate: STT.srcRate, prov: curProv().id, model: curProv().sttModel || 'gemini-inline', pace: S.pace });
     micStatus(t('sttReady').replace('{p}', curProv().name), true);
     return true;
   }
 
   function sttStop() {
-    STT.active = false; STT.paused = false;
+    STT.active = false; STT.paused = false; STT.starting = false;
     try { if (STT.proc) { STT.proc.onaudioprocess = null; STT.proc.disconnect(); } } catch (_) {}
     try { if (STT.gain) STT.gain.disconnect(); } catch (_) {}
     try { if (STT.stream) STT.stream.getTracks().forEach(tr => tr.stop()); } catch (_) {}
