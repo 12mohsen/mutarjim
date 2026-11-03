@@ -361,6 +361,7 @@
           <div class="flex items-center justify-between gap-2 mt-1 flex-wrap">
             <p id="micHint" class="text-[11px] dim start" data-i18n="micIdle">اضغط الميكروفون وابدأ الحديث — التعرّف مستمر.</p>
             <p id="micStatus" class="text-[11px] start font-latin hidden" style="color:var(--warn)"></p>
+            <span id="levelTag" class="text-[11px] font-latin dim" dir="ltr"></span>
             <div class="flex items-center gap-1.5 flex-wrap">
               <button id="listenChip" class="chip" type="button"><span data-lucide="ear"></span></button>
               <button id="handsFreeBtn" class="chip" style="cursor:pointer" aria-pressed="false" title="ترجمة ونطق تلقائي عند التوقف عن الكلام" data-i18n-title="handsFreeHint">
@@ -565,7 +566,10 @@
     <div class="glass-soft p-4 start">
       <h4 class="text-xs font-extrabold mb-2 flex items-center gap-1.5"><span data-lucide="activity"></span><span data-i18n="diag">حالة المتصفح</span></h4>
       <ul id="diagList" class="text-sm muted grid gap-1.5"></ul>
-      <button id="testApiBtn" class="btn btn-xs mt-3"><span data-lucide="plug-zap"></span><span data-i18n="testApi">اختبار الاتصال</span></button>
+      <div class="flex items-center gap-1.5 mt-3 flex-wrap">
+        <button id="testApiBtn" class="btn btn-xs"><span data-lucide="plug-zap"></span><span data-i18n="testApi">اختبار الاتصال</span></button>
+        <button id="micTestBtn" class="btn btn-xs"><span data-lucide="mic"></span><span data-i18n="micTest">اختبار الميكروفون (3 ثوانٍ)</span></button>
+      </div>
     </div>
 
     <div class="glass-soft p-4 start mt-3">
@@ -589,7 +593,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.9.0';
+  const APP_VERSION = '1.10.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -695,6 +699,11 @@
       heard: 'سمع', translated: 'ترجم', diagVersion: 'إصدار التطبيق',
       unclear: 'سمعتُ صوتًا لكن بلا كلام واضح — أعد بصوت أوضح.',
       dlogTitle: 'سجل التشخيص',
+      micTest: 'اختبار الميكروفون (3 ثوانٍ)',
+      testRecording: 'جارٍ التسجيل 3 ثوانٍ — تكلّم الآن بصوت عادي…',
+      testSilent: 'لم يصل أي صوت من الميكروفون. تحقّق من جهاز الإدخال المختار في المتصفح ومن كتم الصوت.',
+      testOk: 'الميكروفون والتفريغ يعملان:',
+      testNoText: 'وصل صوت لكن لم يُستخرج منه نص — تكلّم أقرب وأوضح.',
       dlogHint: 'انسخ هذا السجل وأرسله عند الإبلاغ عن مشكلة — يوضّح أين توقّفت السلسلة بالضبط.',
       micOff: 'التعرّف على الصوت غير مدعوم في هذا المتصفح — استخدم Chrome أو Edge.',
       voiceCtl: 'إعدادات الصوت', voice: 'الصوت', rate: 'السرعة', pitch: 'النبرة',
@@ -778,6 +787,11 @@
       heard: 'dengar', translated: 'terjemah', diagVersion: 'Versi aplikasi',
       unclear: 'Ada suara tapi tidak ada ucapan jelas — coba lagi lebih jelas.',
       dlogTitle: 'Log diagnostik',
+      micTest: 'Uji mikrofon (3 detik)',
+      testRecording: 'Merekam 3 detik — bicara sekarang…',
+      testSilent: 'Tidak ada suara dari mikrofon. Periksa perangkat input dan mute.',
+      testOk: 'Mikrofon dan transkripsi bekerja:',
+      testNoText: 'Ada suara tapi tidak ada teks — bicara lebih dekat dan jelas.',
       dlogHint: 'Salin log ini saat melaporkan masalah — menunjukkan di mana rantai berhenti.',
       micOff: 'Pengenalan suara tidak didukung di peramban ini — gunakan Chrome atau Edge.',
       voiceCtl: 'Pengaturan Suara', voice: 'Suara', rate: 'Kecepatan', pitch: 'Nada',
@@ -861,6 +875,11 @@
       heard: 'heard', translated: 'translated', diagVersion: 'App version',
       unclear: 'Heard audio but no clear speech — try again more clearly.',
       dlogTitle: 'Diagnostic log',
+      micTest: 'Test microphone (3s)',
+      testRecording: 'Recording 3 seconds — speak now…',
+      testSilent: 'No audio reached the page. Check the input device and mute switch.',
+      testOk: 'Microphone and transcription work:',
+      testNoText: 'Audio arrived but produced no text — speak closer and more clearly.',
       dlogHint: 'Copy this log when reporting a problem — it shows exactly where the chain stopped.',
       micOff: 'Speech recognition is not supported in this browser — use Chrome or Edge.',
       voiceCtl: 'Voice Settings', voice: 'Voice', rate: 'Rate', pitch: 'Pitch',
@@ -2701,8 +2720,21 @@
         return;
       }
 
-      const onLevel = Math.max(0.018, STT.floor * 3.5);   // must clearly beat the room
-      const offLevel = Math.max(0.010, STT.floor * 1.8);  // hysteresis: quieter to stay in
+      // live telemetry: without this there is no way to tell a quiet mic from a dead one
+      STT.lvlMax = Math.max(STT.lvlMax || 0, rms);
+      if (!STT.lvlAt || Date.now() - STT.lvlAt > 400) {
+        STT.lvlAt = Date.now();
+        const tag = $('levelTag');
+        if (tag) tag.textContent = 'lvl ' + STT.lvlMax.toFixed(3) + ' / fl ' + STT.floor.toFixed(3);
+        if (!STT.lvlLogAt || Date.now() - STT.lvlLogAt > 2500) {
+          STT.lvlLogAt = Date.now();
+          dlog('stt.level', { max: STT.lvlMax.toFixed(4), floor: STT.floor.toFixed(4), speaking: !!STT.speaking });
+        }
+        STT.lvlMax = 0;
+      }
+
+      const onLevel = Math.max(0.010, STT.floor * 3.0);   // must clearly beat the room
+      const offLevel = Math.max(0.006, STT.floor * 1.8);  // hysteresis: quieter to stay in
 
       if (rms > (STT.speaking ? offLevel : onLevel)) {
         STT.speaking = true; STT.silence = 0; STT.voiced += frameMs;
@@ -2736,6 +2768,89 @@
     analyser = null; dataArr = null;
     if (vizRAF) { cancelAnimationFrame(vizRAF); vizRAF = null; }
     drawIdleViz();
+  }
+
+  // A single decisive test: record 3 seconds, report the real level, and show
+  // exactly what the provider heard — no conversation state, no guessing.
+  async function micSelfTest() {
+    const btn = $('micTestBtn');
+    if (btn) btn.disabled = true;
+    const wasActive = STT.active;
+    try {
+      if (wasActive) sttStop();
+      dlog('test.begin', { prov: curProv().id, proto: location.protocol });
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+      } catch (err) {
+        dlog('test.mic-denied', String(err && err.name));
+        micStatus(t('micDenied'), true);
+        toast(t('micDenied'), 'err', 6000);
+        return;
+      }
+
+      const track = stream.getAudioTracks()[0];
+      dlog('test.device', { label: (track && track.label) || '?', enabled: !!(track && track.enabled), muted: !!(track && track.muted) });
+
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AC();
+      if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (_) {} }
+      const source = ctx.createMediaStreamSource(stream);
+      const proc = ctx.createScriptProcessor(4096, 1, 1);
+      const sink = ctx.createGain(); sink.gain.value = 0;
+      source.connect(proc); proc.connect(sink); sink.connect(ctx.destination);
+
+      const chunks = []; let peak = 0;
+      proc.onaudioprocess = (ev) => {
+        const input = ev.inputBuffer.getChannelData(0);
+        chunks.push(new Float32Array(input));
+        for (let i = 0; i < input.length; i++) { const a = Math.abs(input[i]); if (a > peak) peak = a; }
+      };
+
+      micStatus(t('testRecording'), true);
+      toast(t('testRecording'), 'ok', 3200);
+      await sleep(3000);
+
+      proc.onaudioprocess = null;
+      try { proc.disconnect(); sink.disconnect(); } catch (_) {}
+      try { stream.getTracks().forEach(tr => tr.stop()); } catch (_) {}
+      const rate = ctx.sampleRate;
+      try { await ctx.close(); } catch (_) {}
+
+      const pcm = downsample(chunks, rate, STT_TARGET_RATE);
+      let energy = 0;
+      for (let i = 0; i < pcm.length; i++) energy += pcm[i] * pcm[i];
+      const rms = Math.sqrt(energy / Math.max(1, pcm.length));
+      dlog('test.audio', { peak: peak.toFixed(3), rms: rms.toFixed(4), seconds: (pcm.length / STT_TARGET_RATE).toFixed(1) });
+
+      if (peak < 0.02) {
+        micStatus(t('testSilent'), true);
+        toast(t('testSilent'), 'err', 8000);
+        return;
+      }
+
+      micStatus(t('sttWorking'), true);
+      const text = await transcribeBlob(encodeWav(pcm, STT_TARGET_RATE));
+      dlog('test.text', text ? text.slice(0, 100) : '(empty)');
+      if (text) {
+        const ta = $('inputText');
+        if (ta) { ta.value = text; updateCharCount(); applyInputDir(); }
+        micStatus(t('testOk') + ' « ' + text.slice(0, 60) + ' »', true);
+        toast(t('testOk'), 'ok', 5000);
+      } else {
+        micStatus(t('testNoText'), true);
+        toast(t('testNoText'), 'warn', 7000);
+      }
+    } catch (err) {
+      dlog('test.error', { code: (err && err.code) || '?', msg: String((err && err.message) || err).slice(0, 140) });
+      micStatus(t('sttFail') + ' — ' + providerErrorText(err), true);
+    } finally {
+      if (btn) btn.disabled = false;
+      renderDlog();
+    }
   }
 
   // the browser engine gave up: hand the microphone to the provider instead
@@ -3013,6 +3128,7 @@
       if (!S.viz) stopViz(); else if (wantRecognize) startViz();
     });
     $('testApiBtn').addEventListener('click', testApi);
+    $('micTestBtn').addEventListener('click', () => { userInteracted = true; micSelfTest(); });
     $('dlogCopy').addEventListener('click', () => copyText(dlogText()));
     $('dlogClear').addEventListener('click', () => { DLOG.length = 0; renderDlog(); });
 
