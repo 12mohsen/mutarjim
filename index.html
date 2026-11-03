@@ -632,7 +632,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.12.0';
+  const APP_VERSION = '1.13.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -2332,12 +2332,14 @@
 
     r.onstart = () => {
       recognizing = true; setMicUI(true);
+      dlog('br.start', { lang: r.lang });
       lastResultAt = Date.now();
       startWatchdog();
       // the status line must survive the restart loop: only a real result clears it
     };
 
     r.onresult = (ev) => {
+      dlog('br.result', { n: ev.results.length });
       lastResultAt = Date.now();
       vizBlamed = false;
       micStatus('', false);
@@ -2359,6 +2361,7 @@
 
     r.onerror = (ev) => {
       const code = (ev && ev.error) || 'unknown';
+      dlog('br.error', code);
       if (code !== 'no-speech' && code !== 'aborted') micStatus('speech error: ' + code, true);
       if (code === 'network' || code === 'service-not-allowed' || code === 'language-not-supported') {
         micStatus('speech error: ' + code + ' — ' + t('netSpeechHint'), true);
@@ -2379,6 +2382,7 @@
     };
 
     r.onend = () => {
+      dlog('br.end', { want: wantRecognize, paused: pausedForSpeech });
       recognizing = false;
       if (pausedForSpeech) { setMicUI(true); return; }   // resumed once the voice finishes
       if (wantRecognize) {
@@ -2982,7 +2986,11 @@
   function useCloudEngine() {
     if (S.sttEngine === 'cloud') return true;
     if (S.sttEngine === 'browser') return false;
-    return !recogSupported || !!S.browserSttBroken;     // auto
+    // Auto: the provider's own transcription is the better engine — it detects the
+    // language by itself (the browser engine must be told), it is far more accurate,
+    // and it does not play a start tone in the middle of a conversation.
+    if (providerCanSTT() && curKey()) return true;
+    return !recogSupported || !!S.browserSttBroken;
   }
 
   let wakeLock = null;
@@ -3008,7 +3016,11 @@
       return;
     }
 
-    if (useCloudEngine()) {
+    const cloud = useCloudEngine();
+    dlog('mic.press', { engine: cloud ? 'cloud' : 'browser', setting: S.sttEngine,
+      canStt: providerCanSTT(), hasKey: !!curKey(), proto: location.protocol });
+
+    if (cloud) {
       if (!providerCanSTT()) {
         micStatus(t('sttUnsupported').replace('{p}', curProv().name), true);
         toast(t('sttUnsupported').replace('{p}', curProv().name), 'err', 6000);
