@@ -632,7 +632,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.13.0';
+  const APP_VERSION = '1.14.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -2619,7 +2619,29 @@
     return out;
   }
 
-  async function transcribeBlob(blob) {
+  // Whisper reports language as a full English name; we work in codes.
+  const WHISPER_LANG = {
+    arabic: 'ar', indonesian: 'id', malay: 'id', english: 'en',
+    ar: 'ar', id: 'id', ms: 'id', en: 'en'
+  };
+
+  function allowedLangs() {
+    if (S.twoWay) return [S.src, S.tgt];
+    if (S.src !== 'auto' && LANGS[S.src]) return [S.src];
+    return ['ar', 'id', 'en'];
+  }
+
+  // Which of the conversation languages does this text's script point to?
+  function scriptParty(text, allowed) {
+    const str = String(text || '');
+    const arabic = (str.match(/[\u0600-\u06FF\u0750-\u077F]/g) || []).length;
+    const latin = (str.match(/[A-Za-z]/g) || []).length;
+    if (arabic >= latin && allowed.indexOf('ar') >= 0) return 'ar';
+    const latinParty = allowed.filter(c => c !== 'ar');
+    return latinParty[0] || allowed[0];
+  }
+
+  async function transcribeBlob(blob, forceLang) {
     const P = curProv(), key = curKey();
     if (!key) { const e = new Error('NO_KEY'); e.code = 'NO_KEY'; throw e; }
 
@@ -2629,11 +2651,11 @@
       fd.append('model', P.sttModel);
       fd.append('response_format', 'verbose_json');   // gives per-segment confidence
       fd.append('temperature', '0');
-      // In a dialogue either side may speak next, so forcing a language turns the
-      // other speaker into gibberish. Let Whisper detect it; the direction follows.
-      if (!S.twoWay && S.src !== 'auto' && LANGS[S.src]) {
-        fd.append('language', S.src);
-        fd.append('prompt', STT_PROMPT[S.src] || STT_PROMPT.en);
+      // First pass lets Whisper detect; a forced pass is used only to correct it.
+      const lockTo = forceLang || (!S.twoWay && S.src !== 'auto' && LANGS[S.src] ? S.src : '');
+      if (lockTo && LANGS[lockTo]) {
+        fd.append('language', lockTo);
+        fd.append('prompt', STT_PROMPT[lockTo] || STT_PROMPT.en);
       }
       const res = await fetch(P.sttUrl, { method: 'POST', headers: { Authorization: 'Bearer ' + key }, body: fd });
       if (!res.ok) {
@@ -2643,6 +2665,8 @@
       const j = await res.json();
 
       const whole = cleanTranscript((j && j.text) || '');
+      const rawLang = String((j && j.language) || '').toLowerCase();
+      const detectedLang = WHISPER_LANG[rawLang] || '';   // '' = a language we do not translate
 
       // Drop only what the model itself flags as very likely not speech. Short
       // words legitimately score poorly, so a filtered-out result still falls
@@ -2663,11 +2687,11 @@
         dlog('stt.segments', { total: j.segments.length, kept: good.length, lang: j.language || '?',
           nsp: j.segments.map(sg => Number(sg.no_speech_prob || 0).toFixed(2)).join(','),
           lp: j.segments.map(sg => Number(sg.avg_logprob || 0).toFixed(2)).join(',') });
-        if (picked) return picked;
-        if (whole) { dlog('stt.lowconf-kept', whole.slice(0, 60)); return whole; }
-        return '';
+        if (picked) return { text: picked, lang: detectedLang, rawLang: rawLang };
+        if (whole) { dlog('stt.lowconf-kept', whole.slice(0, 60)); return { text: whole, lang: detectedLang, rawLang: rawLang }; }
+        return { text: '', lang: detectedLang, rawLang: rawLang };
       }
-      return whole;
+      return { text: whole, lang: detectedLang, rawLang: rawLang };
     }
 
     if (P.kind === 'gemini') {   // Gemini reads the audio inline, no separate endpoint
@@ -2690,7 +2714,7 @@
       );
       const cand = data && data.candidates && data.candidates[0];
       const parts = (cand && cand.content && cand.content.parts) || [];
-      return cleanTranscript(parts.map(p => (p && p.text) || '').join(''));
+      return { text: cleanTranscript(parts.map(p => (p && p.text) || '').join('')), lang: '' };
     }
 
     const e = new Error('NO_STT'); e.code = 'NO_STT'; throw e;
@@ -2720,7 +2744,25 @@
       dlog('stt.audio', { peak: peak.toFixed(3), rms: rms.toFixed(4), samples: pcm.length });
       if (peak < 0.05 || rms < 0.006) { dlog('stt.skip', 'too quiet'); micStatus('', false); return; }
 
-      const text = await transcribeBlob(encodeWav(pcm, STT_TARGET_RATE));
+      const wav = encodeWav(pcm, STT_TARGET_RATE);
+      let res = await transcribeBlob(wav);
+      const allowed = allowedLangs();
+
+      // Whisper guesses badly on very short clips — Arabic becomes "Urdu",
+      // Indonesian becomes "Turkish". When the guess is outside this conversation,
+      // ask again with the language the script actually points to.
+      // An unmapped language (Urdu, Turkish...) is just as wrong as a mapped one
+      // that is not in this conversation — both mean the guess was bad.
+      const offPair = res.rawLang && (!res.lang || allowed.indexOf(res.lang) < 0);
+      if (offPair && allowed.length > 1) {
+        const want = scriptParty(res.text, allowed);
+        dlog('stt.relang', { got: res.rawLang, forcing: want, was: String(res.text).slice(0, 40) });
+        try {
+          const res2 = await transcribeBlob(wav, want);
+          if (res2 && res2.text) res = { text: res2.text, lang: want };
+        } catch (e2) { dlog('stt.relang-failed', String(e2 && e2.message).slice(0, 60)); }
+      }
+      const text = res.text;
       const tHeard = Date.now() - t0;
       micStatus('', false);
       dlog('stt.text', { ms: tHeard, text: text ? text.slice(0, 80) : '(empty)' });
@@ -2948,8 +2990,9 @@
       }
 
       micStatus(t('sttWorking'), true);
-      const text = await transcribeBlob(encodeWav(pcm, STT_TARGET_RATE));
-      dlog('test.text', text ? text.slice(0, 100) : '(empty)');
+      const tres = await transcribeBlob(encodeWav(pcm, STT_TARGET_RATE));
+      const text = tres && tres.text;
+      dlog('test.text', { text: text ? text.slice(0, 100) : '(empty)', lang: (tres && tres.lang) || '?' });
       if (text) {
         const ta = $('inputText');
         if (ta) { ta.value = text; updateCharCount(); applyInputDir(); }
