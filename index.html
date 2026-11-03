@@ -632,7 +632,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.15.0';
+  const APP_VERSION = '1.16.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -2553,7 +2553,7 @@
     return s;
   }
   function pace() { return PACE[S.pace] || PACE.fast; }
-  const STT_MAX_MS = 7000;          // cut long speech mid-flow instead of making it wait
+  const STT_MAX_MS = 12000;         // safety cut for speech with no pause at all
 
   function micConstraints() {
     const c = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
@@ -2709,14 +2709,17 @@
           return true;
         });
         const picked = cleanTranscript(good.map(sg => sg.text || '').join(' '));
+        const score = good.length
+          ? good.reduce((acc, sg) => acc + (sg.avg_logprob === undefined ? -0.5 : sg.avg_logprob), 0) / good.length
+          : -3;
         dlog('stt.segments', { total: j.segments.length, kept: good.length, lang: j.language || '?',
           nsp: j.segments.map(sg => Number(sg.no_speech_prob || 0).toFixed(2)).join(','),
           lp: j.segments.map(sg => Number(sg.avg_logprob || 0).toFixed(2)).join(',') });
-        if (picked) return { text: picked, lang: detectedLang, rawLang: rawLang };
-        if (whole) { dlog('stt.lowconf-kept', whole.slice(0, 60)); return { text: whole, lang: detectedLang, rawLang: rawLang }; }
-        return { text: '', lang: detectedLang, rawLang: rawLang };
+        if (picked) return { text: picked, lang: detectedLang, rawLang: rawLang, score: score };
+        if (whole) { dlog('stt.lowconf-kept', whole.slice(0, 60)); return { text: whole, lang: detectedLang, rawLang: rawLang, score: score - 0.5 }; }
+        return { text: '', lang: detectedLang, rawLang: rawLang, score: -3 };
       }
-      return { text: whole, lang: detectedLang, rawLang: rawLang };
+      return { text: whole, lang: detectedLang, rawLang: rawLang, score: -1 };
     }
 
     if (P.kind === 'gemini') {   // Gemini reads the audio inline, no separate endpoint
@@ -2739,13 +2742,13 @@
       );
       const cand = data && data.candidates && data.candidates[0];
       const parts = (cand && cand.content && cand.content.parts) || [];
-      return { text: cleanTranscript(parts.map(p => (p && p.text) || '').join('')), lang: '' };
+      return { text: cleanTranscript(parts.map(p => (p && p.text) || '').join('')), lang: '', rawLang: '', score: 0 };
     }
 
     const e = new Error('NO_STT'); e.code = 'NO_STT'; throw e;
   }
 
-  async function sttFlush() {
+  async function sttFlush(reason) {
     // a stuck request must never deafen the app forever
     if (STT.busy && STT.busyAt && Date.now() - STT.busyAt > 30000) {
       dlog('stt.unstick', 'forced busy reset');
@@ -2785,11 +2788,17 @@
       // that is not in this conversation — both mean the guess was bad.
       const offPair = res.rawLang && (!res.lang || allowed.indexOf(res.lang) < 0);
       if (offPair && allowed.length > 1) {
-        const want = scriptParty(res.text, allowed);
-        dlog('stt.relang', { got: res.rawLang, forcing: want, was: String(res.text).slice(0, 40) });
+        // Its own output cannot be trusted to pick the language either: Arabic
+        // speech comes back as Latin-script "Turkish". Ask again in BOTH
+        // conversation languages at once and keep the more confident result.
+        dlog('stt.relang', { got: res.rawLang, trying: allowed.join('+'), was: String(res.text).slice(0, 40) });
         try {
-          const res2 = await transcribeBlob(wav, want);
-          if (res2 && res2.text) res = { text: res2.text, lang: want };
+          const tries = await Promise.all(allowed.map(code =>
+            transcribeBlob(wav, code).then(r => ({ code: code, r: r }), () => null)));
+          const ranked = tries.filter(x => x && x.r && x.r.text)
+            .sort((x, y) => (y.r.score || -3) - (x.r.score || -3));
+          dlog('stt.relang-scores', ranked.map(x => x.code + ':' + Number(x.r.score || -3).toFixed(2)).join(' '));
+          if (ranked.length) res = { text: ranked[0].r.text, lang: ranked[0].code };
         } catch (e2) { dlog('stt.relang-failed', String(e2 && e2.message).slice(0, 60)); }
       }
       const text = res.text;
@@ -2810,7 +2819,10 @@
 
       if (S.handsFree) {
         const say = (ta && ta.value || '').trim();
-        dlog('hf.check', { handsFree: true, len: say.length, dup: say === lastSpoken });
+        // mid-sentence cut: hold the text and wait for the real pause
+        const holding = reason === 'max' && say.length < 400;
+        dlog('hf.check', { handsFree: true, len: say.length, dup: say === lastSpoken, reason: reason || 'silence', holding: holding });
+        if (holding) return;
         if (say && say !== lastSpoken) {
           lastSpoken = say;
           const t1 = Date.now();
@@ -2927,14 +2939,16 @@
       } else if (STT.speaking) {                   // trailing quiet: keep it, it ends words cleanly
         STT.silence += frameMs;
         STT.buf.push(new Float32Array(input));
-        if (STT.silence >= pace().silence) { STT.speaking = false; STT.silence = 0; sttFlush(); }
+        if (STT.silence >= pace().silence) { STT.speaking = false; STT.silence = 0; sttFlush('silence'); }
       } else {
         // track a drifting room: fall to new quiet quickly, rise only grudgingly
         STT.floor = rms < STT.floor
           ? STT.floor * 0.90 + rms * 0.10
           : Math.min(0.05, STT.floor * 0.999 + rms * 0.001);
       }
-      if (STT.voiced >= STT_MAX_MS) { STT.speaking = false; STT.silence = 0; sttFlush(); }
+      // a long stretch without a pause is cut only to keep latency sane; the text
+      // is kept and joined, not treated as the end of the turn
+      if (STT.voiced >= STT_MAX_MS) { STT.silence = 0; sttFlush('max'); }
     };
 
     STT.active = true; STT.starting = false;
