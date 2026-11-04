@@ -707,7 +707,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.21.0';
+  const APP_VERSION = '1.22.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -833,7 +833,7 @@
       install: 'تثبيت التطبيق على الجوال', installed: 'تم تثبيت التطبيق — ستجده بين تطبيقاتك.',
       installHow: 'من قائمة المتصفح (⋮) اختر «تثبيت التطبيق» أو «إضافة إلى الشاشة الرئيسية».',
       syncing: 'جارٍ الرفع {n}/{m}…',
-      syncDone: 'تم رفع {n} جملة إلى القاعدة (تم تجاهل {d} مكرّرة).',
+      syncDone: 'تمت إضافة الجديد فقط من {n} جملة ({d} مكرّرة محليًا). الموجود في القاعدة لم يُمسّ.',
       glossEmpty: 'القاموس فارغ — أضف الكلمات التي تُترجم خطأً.',
       glossLoaded: 'تم تحميل {n} مصطلحًا', fromMemory: 'من الذاكرة',
       gTerm: 'الكلمة كما تُقال', gTrans: 'ترجمتها الصحيحة', gAdd: 'أضف إلى القاموس',
@@ -950,7 +950,7 @@
       install: 'Pasang aplikasi', installed: 'Aplikasi terpasang.',
       installHow: 'Dari menu peramban (⋮) pilih «Pasang aplikasi» atau «Tambahkan ke layar utama».',
       syncing: 'Mengunggah {n}/{m}…',
-      syncDone: '{n} kalimat diunggah ({d} duplikat dilewati).',
+      syncDone: 'Hanya yang baru ditambahkan dari {n} kalimat ({d} duplikat lokal). Data lama tidak diubah.',
       glossEmpty: 'Glosarium kosong — tambahkan kata yang salah diterjemahkan.',
       glossLoaded: '{n} istilah dimuat', fromMemory: 'dari memori',
       gTerm: 'Kata seperti diucapkan', gTrans: 'Terjemahan yang benar', gAdd: 'Tambah ke glosarium',
@@ -1067,7 +1067,7 @@
       install: 'Install the app', installed: 'App installed.',
       installHow: 'From the browser menu (⋮) choose "Install app" or "Add to Home screen".',
       syncing: 'Uploading {n}/{m}…',
-      syncDone: '{n} sentences uploaded ({d} duplicates skipped).',
+      syncDone: 'Only new rows added from {n} sentences ({d} local duplicates). Existing rows untouched.',
       glossEmpty: 'The glossary is empty — add the words that come out wrong.',
       glossLoaded: '{n} terms loaded', fromMemory: 'from memory',
       gTerm: 'Word as spoken', gTrans: 'Correct translation', gAdd: 'Add to glossary',
@@ -1515,9 +1515,12 @@
   async function memorySave(text, out, from, to, corrected) {
     if (!sbReady() || !S.useMemory) return;
     try {
+      // Only an explicit correction may replace a stored translation. Everything
+      // else adds new rows and leaves existing ones — and your fixes — untouched.
+      const mode = corrected ? 'merge-duplicates' : 'ignore-duplicates';
       await sbFetch('tmemory?on_conflict=src_lang,tgt_lang,src_norm', {
         method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+        headers: { Prefer: 'resolution=' + mode + ',return=minimal' },
         body: [{
           src_lang: from, tgt_lang: to,
           src_norm: normKey(text), src_text: String(text).slice(0, 2000),
@@ -1525,7 +1528,7 @@
           corrected: !!corrected, updated_at: new Date().toISOString()
         }]
       });
-      dlog('db.saved', { corrected: !!corrected });
+      dlog('db.saved', { corrected: !!corrected, mode: mode });
     } catch (err) {
       dlog('db.save-error', String((err && err.message) || err).slice(0, 80));
     }
@@ -1591,7 +1594,7 @@
         const chunk = rows.slice(i, i + 100);
         await sbFetch('tmemory?on_conflict=src_lang,tgt_lang,src_norm', {
           method: 'POST',
-          headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+          headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' },
           body: chunk
         });
         done += chunk.length;
