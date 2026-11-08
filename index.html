@@ -709,7 +709,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.25.0';
+  const APP_VERSION = '1.26.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -2245,8 +2245,9 @@
 
     if (S.twoWay) {
       // whoever just spoke gets answered in the other party's language
-      from = detectBetween(text, S.src, S.tgt);
+      from = (heardLang && LANGS[heardLang]) ? heardLang : detectBetween(text, S.src, S.tgt);
       to = (from === S.src) ? S.tgt : S.src;
+      if (from === to) to = (from === S.src) ? S.tgt : S.src;
     } else {
       if (from === 'auto') from = localGuess.code;
       if (from === to) {
@@ -2624,6 +2625,7 @@
   let recog = null, recognizing = false, wantRecognize = false;
   let baseTranscript = '';
   let pausedForSpeech = false, handsFreeTimer = null, lastSpoken = '';
+  let heardLang = '';            // language the transcription settled on, if any
   let lastResultAt = 0, watchdog = null, vizBlamed = false;
 
   function micStatus(msg, show) {
@@ -3253,14 +3255,20 @@
       // ask again with the language the script actually points to.
       // An unmapped language (Urdu, Turkish...) is just as wrong as a mapped one
       // that is not in this conversation — both mean the guess was bad.
+      // Speakers of Indonesian often switch to Sundanese, and Whisper then labels
+      // it anything from "Javanese" to "Icelandic". Keep su as a candidate so the
+      // right transcription wins even when the pair was never set to Sundanese.
+      const candidates = allowed.slice();
+      if (candidates.indexOf('id') >= 0 && candidates.indexOf('su') < 0) candidates.push('su');
+
       const offPair = res.rawLang && (!res.lang || allowed.indexOf(res.lang) < 0);
-      if (offPair && allowed.length > 1) {
+      if (offPair && candidates.length > 1) {
         // Its own output cannot be trusted to pick the language either: Arabic
         // speech comes back as Latin-script "Turkish". Ask again in BOTH
         // conversation languages at once and keep the more confident result.
-        dlog('stt.relang', { got: res.rawLang, trying: allowed.join('+'), was: String(res.text).slice(0, 40) });
+        dlog('stt.relang', { got: res.rawLang, trying: candidates.join('+'), was: String(res.text).slice(0, 40) });
         try {
-          const tries = await Promise.all(allowed.map(code =>
+          const tries = await Promise.all(candidates.map(code =>
             transcribeBlob(wav, code).then(r => ({ code: code, r: r }), () => null)));
           const ranked = tries.filter(x => x && x.r && x.r.text)
             .sort((x, y) => (y.r.score || -3) - (x.r.score || -3));
@@ -3275,6 +3283,8 @@
       if (!text) { micStatus(t('unclear'), true); return; }
       if (text === STT.lastText) { dlog('stt.skip', 'duplicate'); return; }
       STT.lastText = text;
+      // the recogniser's own verdict beats guessing the direction from the script
+      heardLang = (res.lang && LANGS[res.lang]) ? res.lang : '';
 
       const ta = $('inputText');
       if (ta) {
@@ -3810,7 +3820,7 @@
 
     // input
     const ta = $('inputText');
-    ta.addEventListener('input', () => { updateCharCount(); if (S.src === 'auto') applyInputDir(); });
+    ta.addEventListener('input', () => { heardLang = ''; updateCharCount(); if (S.src === 'auto') applyInputDir(); });
     ta.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); userInteracted = true; doTranslate(); }
     });
@@ -3825,7 +3835,7 @@
     });
 
     // actions
-    $('translateBtn').addEventListener('click', () => { userInteracted = true; doTranslate(); });
+    $('translateBtn').addEventListener('click', () => { userInteracted = true; heardLang = ''; doTranslate(); });
     $('micBtn').addEventListener('click', toggleMic);
     $('micBtnM').addEventListener('click', toggleMic);
     $('listenChipM').addEventListener('click', () => $('listenChip').click());
