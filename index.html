@@ -709,7 +709,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.23.0';
+  const APP_VERSION = '1.24.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -2966,10 +2966,16 @@
   // Whisper was trained on subtitle files, so on short or near-silent audio it
   // "remembers" translator credits and channel plugs. Never let those through.
   const HALLUCINATIONS = [
+    // phrases the app itself used to send as a prompt — never real speech
+    /^محادثه\s+قصيره/, /^وعاديه\s+بين\s+شخصين/, /^جمل\s+قصيره/,
+    /^percakapan\s+singkat/i, /^a\s+short\s+everyday\s+conversation/i,
     /نانسي\s*قنقر/i,
     /^ترجمة\s+(نانسي|فريق|قناة|مركز|مؤسسة|موقع)/,
-    /^(اشترك|اشتركوا|تابعونا|لا\s*تنسوا|لا\s*تنسى)\b/,
-    /^شكرا\s+(جزيلا\s+)?(لكم\s+)?(على\s+)?(المشاهدة|المتابعة)/,
+    /^(اشترك|اشتركوا|تابعونا|لا\s*تنسوا|لا\s*تنسي)/,
+    /^(berlangganan|jangan\s+lupa\s+(subscribe|like))/i,
+    /قناتنا|القناه|subscribe/i,
+    /^شكرا\s*(جزيلا\s*)?(لكم\s*)?(على|ل)?\s*(لمشاهده|المشاهده|المتابعه|مشاهده)/,
+    /^terima\s+kasih\s+(atas\s+)?(telah\s+)?(penonton|menonton|sudah\s+menonton)/i,
     /amara\.org|opensubtitles|subscene|addic7ed/i,
     /^(subtitles?|subs)\b.{0,20}\b(by|provided|created)/i,
     /^thank(s| you) for watching/i,
@@ -2978,16 +2984,18 @@
     /^[♪♫\s]+$/
   ];
 
-  const STT_PROMPT = {
-    ar: 'محادثة قصيرة وعادية بين شخصين. جمل قصيرة مثل: شكرًا. نعم. كيف حالك؟',
-    id: 'Percakapan singkat sehari-hari antara dua orang. Kalimat pendek seperti: Terima kasih. Ya. Apa kabar?',
-    en: 'A short everyday conversation between two people. Short sentences like: Thank you. Yes. How are you?'
-  };
+  // sounds, not words: "Oh.", "Eeeh.", "Uh-oh." are noise, never a sentence
+  // Written out one by one: a blanket vowel rule would also swallow real words
+  // such as the Indonesian "hai".
+  const FILLER_ONLY = /^(o+h*|a+h+|e+h*|u+h*|u+m+|h+m+|m+m+|ha+h*|hu+h|ugh|uh[- ]?oh|ا+ه+|أ+ه+|او+ه+|أو+ه+|ه+م+|م+م+|ايه|إيه)[\s.,!?؟،\u2026-]*$/i;
 
   function cleanTranscript(raw) {
     let s = String(raw || '').replace(/\s+/g, ' ').trim();
     if (!s) return '';
-    for (const re of HALLUCINATIONS) if (re.test(s)) return '';
+    // test against a diacritic-free form, or "شكراً" slips past a rule written "شكرا"
+    const bare = normKey(s);
+    for (const re of HALLUCINATIONS) if (re.test(s) || re.test(bare)) return '';
+    if (FILLER_ONLY.test(s)) return '';
     // a single token repeated over and over is also a hallucination loop
     const w = s.split(' ');
     if (w.length >= 6) {
@@ -3108,13 +3116,10 @@
       fd.append('temperature', '0');
       // First pass lets Whisper detect; a forced pass is used only to correct it.
       const lockTo = forceLang || (!S.twoWay && S.src !== 'auto' && LANGS[S.src] ? S.src : '');
-      if (lockTo && LANGS[lockTo]) {
-        fd.append('language', lockTo);
-        // biasing the recogniser with your own terms makes it hear them correctly
-        const terms = glossary.filter(g => g.src_lang === lockTo).slice(0, 30).map(g => g.term);
-        const base = STT_PROMPT[lockTo] || STT_PROMPT.en;
-        fd.append('prompt', terms.length ? base + ' ' + terms.join('، ') : base);
-      }
+      if (lockTo && LANGS[lockTo]) fd.append('language', lockTo);
+      // No `prompt` is ever sent. Whisper repeats its prompt verbatim whenever the
+      // audio holds no clear speech, so a biasing phrase comes back as a fake
+      // transcript and then gets translated and stored. Not worth the bias.
       const ctl = new AbortController();
       const timer = setTimeout(() => { try { ctl.abort(); } catch (_) {} }, 25000);
       let res;
