@@ -709,7 +709,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.24.0';
+  const APP_VERSION = '1.25.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -767,9 +767,10 @@
     auto: { code: 'auto', bcp: '',      flag: '🌐', dir: 'auto', name: { ar: 'كشف تلقائي', id: 'Deteksi otomatis', en: 'Auto-detect' } },
     ar:   { code: 'ar',   bcp: 'ar-SA', flag: '🇸🇦', dir: 'rtl',  name: { ar: 'العربية',     id: 'Arab',             en: 'Arabic' } },
     id:   { code: 'id',   bcp: 'id-ID', flag: '🇮🇩', dir: 'ltr',  name: { ar: 'الإندونيسية', id: 'Indonesia',        en: 'Indonesian' } },
+    su:   { code: 'su',   bcp: 'su-ID', flag: '🏳️', dir: 'ltr',  name: { ar: 'السوندانية',  id: 'Sunda',            en: 'Sundanese' } },
     en:   { code: 'en',   bcp: 'en-US', flag: '🇬🇧', dir: 'ltr',  name: { ar: 'الإنجليزية',  id: 'Inggris',          en: 'English' } }
   };
-  const LANG_FULL = { ar: 'Arabic', id: 'Indonesian', en: 'English' };
+  const LANG_FULL = { ar: 'Arabic', id: 'Indonesian', su: 'Sundanese (Basa Sunda)', en: 'English' };
 
   const I18N = {
     ar: {
@@ -1312,6 +1313,12 @@
       const ar = a === 'ar' ? a : b, other = a === 'ar' ? b : a;
       return (arabic > 0 && arabic >= latin) ? ar : other;
     }
+    // Sundanese and Indonesian share the script, so a few marker words decide
+    const low = ' ' + s.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ') + ' ';
+    const su = [' abdi ', ' kumaha ', ' damang ', ' hatur ', ' nuhun ', ' teu ', ' aya ', ' euy ',
+                ' atuh ', ' mah ', ' teh ', ' eta ', ' kade ', ' punten ', ' sumuhun ', ' henteu ',
+                ' bade ', ' hayang ', ' naon ', ' kumaha ', ' urang ', ' sareng ', ' wae ', ' anu '];
+    if ((a === 'su' || b === 'su') && su.some(w => low.indexOf(w) >= 0)) return a === 'su' ? a : b;
     const g = detectLocal(s).code;                  // id vs en: fall back to the word model
     if (g === a || g === b) return g;
     return a;
@@ -1657,8 +1664,14 @@
   function buildPrompt(text, from, to, plain) {
     const target = LANG_FULL[to];
     const gloss = glossaryBlock(text, from, to);
+    // Sundanese is a language of West Java in its own right; without saying so the
+    // model quietly treats it as Indonesian and the meaning drifts.
+    const sunda = (from === 'su' || to === 'su')
+      ? '\nSundanese (Basa Sunda) is the regional language of West Java and is NOT Indonesian. ' +
+        'Treat it as its own language, keep its own words, and do not substitute Indonesian.\n'
+      : '';
     const srcLine = from === 'auto'
-      ? 'The source language is UNKNOWN: identify it first (it will be Arabic, Indonesian or English).'
+      ? 'The source language is UNKNOWN: identify it first (Arabic, Indonesian, Sundanese or English).'
       : 'The source language is ' + LANG_FULL[from] + '.';
 
     // When the direction is already known there is nothing to detect, so skip the
@@ -1671,6 +1684,7 @@
         S.formal ? 'Use a polite, formal register.' : 'Keep the same register as the input.',
         'Keep proper nouns, numbers and dates unchanged. Use the punctuation style of ' + target + '.',
         'Output ONLY the translation: no quotes, no notes, no explanation.',
+        sunda,
         gloss,
         '',
         String(text)
@@ -1694,6 +1708,7 @@
       '6. Preserve the original formatting: line breaks, lists, emoji and punctuation style of the target language.',
       '7. For Arabic output use correct Arabic punctuation (، ؟ ؛) and no Latin question marks.',
       '8. Do not explain, do not add greetings, do not wrap the result in quotes.',
+      sunda,
       gloss,
       '',
       'Reply with ONLY a JSON object, no markdown fences:',
@@ -2046,12 +2061,12 @@
     const src = $('srcLang'), tgt = $('tgtLang');
     if (!src || !tgt) return;
     src.innerHTML = ''; tgt.innerHTML = '';
-    (S.twoWay ? ['ar', 'id', 'en'] : ['auto', 'ar', 'id', 'en']).forEach(c => {
+    (S.twoWay ? ['ar', 'id', 'su', 'en'] : ['auto', 'ar', 'id', 'su', 'en']).forEach(c => {
       const o = document.createElement('option');
       o.value = c; o.textContent = optionLabel(c);
       src.appendChild(o);
     });
-    ['ar', 'id', 'en'].forEach(c => {
+    ['ar', 'id', 'su', 'en'].forEach(c => {
       const o = document.createElement('option');
       o.value = c; o.textContent = optionLabel(c);
       tgt.appendChild(o);
@@ -3084,14 +3099,14 @@
 
   // Whisper reports language as a full English name; we work in codes.
   const WHISPER_LANG = {
-    arabic: 'ar', indonesian: 'id', malay: 'id', english: 'en',
-    ar: 'ar', id: 'id', ms: 'id', en: 'en'
+    arabic: 'ar', indonesian: 'id', malay: 'id', english: 'en', sundanese: 'su', javanese: 'su',
+    ar: 'ar', id: 'id', ms: 'id', en: 'en', su: 'su', jv: 'su'
   };
 
   function allowedLangs() {
     if (S.twoWay) return [S.src, S.tgt];
     if (S.src !== 'auto' && LANGS[S.src]) return [S.src];
-    return ['ar', 'id', 'en'];
+    return ['ar', 'id', 'su', 'en'];
   }
 
   // Which of the conversation languages does this text's script point to?
@@ -3660,7 +3675,7 @@
       const sel = $(pair[0]);
       if (!sel) return;
       sel.innerHTML = '';
-      ['ar', 'id', 'en'].forEach(c => {
+      ['ar', 'id', 'su', 'en'].forEach(c => {
         const o = document.createElement('option');
         o.value = c; o.textContent = LANGS[c].flag + ' ' + langName(c);
         sel.appendChild(o);
