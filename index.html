@@ -616,6 +616,9 @@
         <button id="fastModelBtn" class="btn btn-icon shrink-0" title="اختر أسرع موديل" data-i18n-title="fastModel">
           <span data-lucide="zap"></span>
         </button>
+        <button id="bestModelBtn" class="btn btn-icon shrink-0" title="اختر أدق موديل" data-i18n-title="bestModel">
+          <span data-lucide="sparkles"></span>
+        </button>
       </div>
       <datalist id="modelList"></datalist>
       <div id="modelPicks" class="flex flex-wrap gap-1.5 mt-2"></div>
@@ -632,6 +635,10 @@
         <input type="checkbox" id="vizToggle" class="!w-4 !h-4 accent-[var(--accent)]">
         <span data-i18n="vizLbl">إظهار مؤشر الموجة (أطفئه إذا لم يلتقط الميكروفون كلامك)</span>
       </label>
+      <label class="block text-xs font-extrabold mt-4 mb-1.5" for="sttModelSel" data-i18n="sttModelLbl">نموذج تحويل الصوت إلى نص</label>
+      <select id="sttModelSel" class="font-latin !text-sm" dir="ltr"></select>
+      <p class="text-[11px] dim mt-1.5" data-i18n="sttModelHint">النموذج الأكبر أبطأ بقليل وأدق بوضوح مع اللهجات والكلام المختلط — اختره إذا كان همّك الفهم.</p>
+
       <label class="block text-xs font-extrabold mt-4 mb-1.5" for="micSel" data-i18n="micDevice">جهاز الميكروفون</label>
       <div class="flex gap-2">
         <select id="micSel" class="!text-sm"></select>
@@ -709,7 +716,7 @@
   /* =========================================================
    *  0. SAFE STORAGE
    * ========================================================= */
-  const APP_VERSION = '1.26.0';
+  const APP_VERSION = '1.27.0';
   const LS_KEYS = { settings: 'mtrjm.settings.v1', history: 'mtrjm.history.v1' };
   const memStore = Object.create(null);
   let lsOK = true;
@@ -821,6 +828,10 @@
       micDeviceHint: 'إن كان المتصفح يستمع لجهاز خاطئ فلن يصل أي صوت. اختر الجهاز الصحيح هنا.',
       micDeviceSet: 'تم تغيير جهاز الميكروفون.',
       fastModel: 'اختر أسرع موديل', fastModelSet: 'تم اختيار {m} — الأسرع المتاح.',
+      bestModel: 'اختر أدق موديل', bestModelSet: 'تم اختيار {m} — الأدق للكلام الصعب.',
+      sttModelLbl: 'نموذج تحويل الصوت إلى نص',
+      sttModelHint: 'النموذج الأكبر أبطأ بقليل وأدق بوضوح مع اللهجات والكلام المختلط — اختره إذا كان همّك الفهم.',
+      sttModelSet: 'تم اختيار {m} للتفريغ الصوتي.',
       dbTitle: 'قاموس المصطلحات وذاكرة الترجمة',
       dbHint: 'مشروع Supabase خاص بهذا التطبيق وحده. يُحفظ المفتاح في متصفحك فقط ولا يدخل ملف الصفحة.',
       dbTest: 'اختبار القاعدة', dbOk: 'القاعدة متصلة', dbFail: 'فشل الاتصال بالقاعدة',
@@ -941,6 +952,10 @@
       micDeviceHint: 'Jika peramban memakai perangkat yang salah, tidak ada suara yang masuk.',
       micDeviceSet: 'Perangkat mikrofon diubah.',
       fastModel: 'Pilih model tercepat', fastModelSet: '{m} dipilih — tercepat yang tersedia.',
+      bestModel: 'Pilih model paling akurat', bestModelSet: '{m} dipilih — paling akurat.',
+      sttModelLbl: 'Model suara ke teks',
+      sttModelHint: 'Model besar sedikit lebih lambat tapi jauh lebih akurat untuk dialek dan bahasa campuran.',
+      sttModelSet: '{m} dipilih untuk transkripsi.',
       dbTitle: 'Glosarium & memori terjemahan',
       dbHint: 'Proyek Supabase khusus aplikasi ini. Kunci hanya disimpan di peramban Anda.',
       dbTest: 'Uji basis data', dbOk: 'Basis data tersambung', dbFail: 'Gagal menyambung ke basis data',
@@ -1061,6 +1076,10 @@
       micDeviceHint: 'If the browser listens to the wrong device, no audio ever arrives.',
       micDeviceSet: 'Microphone device changed.',
       fastModel: 'Pick the fastest model', fastModelSet: '{m} selected — the fastest available.',
+      bestModel: 'Pick the most accurate model', bestModelSet: '{m} selected — the most accurate.',
+      sttModelLbl: 'Speech-to-text model',
+      sttModelHint: 'The larger model is a little slower and clearly better on dialects and mixed speech.',
+      sttModelSet: '{m} selected for transcription.',
       dbTitle: 'Glossary & translation memory',
       dbHint: 'A Supabase project for this app alone. The key is kept in your browser only.',
       dbTest: 'Test database', dbOk: 'Database connected', dbFail: 'Database connection failed',
@@ -1146,13 +1165,14 @@
       url: 'https://api.deepseek.com/chat/completions',
       listUrl: 'https://api.deepseek.com/models',
       hint: 'sk-…', keyUrl: 'https://platform.deepseek.com/api_keys',
-      def: 'deepseek-chat', models: ['deepseek-chat', 'deepseek-reasoner']
+      def: 'deepseek-chat', best: 'deepseek-chat', models: ['deepseek-chat', 'deepseek-reasoner']
     },
     openai: {
       id: 'openai', name: 'OpenAI', kind: 'openai',
       url: 'https://api.openai.com/v1/chat/completions',
       listUrl: 'https://api.openai.com/v1/models',
-      sttUrl: 'https://api.openai.com/v1/audio/transcriptions', sttModel: 'whisper-1',
+      sttUrl: 'https://api.openai.com/v1/audio/transcriptions', sttModel: 'gpt-4o-transcribe',
+      sttModels: ['gpt-4o-transcribe', 'whisper-1', 'gpt-4o-mini-transcribe'], best: 'gpt-4.1',
       hint: 'sk-…', keyUrl: 'https://platform.openai.com/api-keys',
       def: 'gpt-4.1-mini', models: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o-mini', 'gpt-4o', 'o4-mini']
     },
@@ -1161,14 +1181,15 @@
       url: 'https://generativelanguage.googleapis.com/v1beta/models/',
       listUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
       hint: 'AIza…', keyUrl: 'https://aistudio.google.com/apikey',
-      def: 'gemini-3-flash-preview',
+      def: 'gemini-3-flash-preview', best: 'gemini-2.5-pro',
       models: ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash']
     },
     groq: {
       id: 'groq', name: 'Groq', kind: 'openai',
       url: 'https://api.groq.com/openai/v1/chat/completions',
       listUrl: 'https://api.groq.com/openai/v1/models',
-      sttUrl: 'https://api.groq.com/openai/v1/audio/transcriptions', sttModel: 'whisper-large-v3-turbo',
+      sttUrl: 'https://api.groq.com/openai/v1/audio/transcriptions', sttModel: 'whisper-large-v3',
+      sttModels: ['whisper-large-v3', 'whisper-large-v3-turbo'], best: 'llama-3.3-70b-versatile',
       hint: 'gsk_…', keyUrl: 'https://console.groq.com/keys',
       def: 'llama-3.1-8b-instant',
       models: ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b']
@@ -1181,7 +1202,7 @@
     rate: 1, pitch: 1, provider: 'gemini', keys: {}, models: {},
     formal: false, autoSpeak: false, handsFree: false, twoWay: false, histView: 'list', viz: true,
     sttEngine: 'auto', browserSttBroken: false, pace: 'fast', micId: '',
-    sbUrl: '', sbKey: '', useMemory: true, voices: {}
+    sbUrl: '', sbKey: '', useMemory: true, sttModels: {}, voices: {}
   };
   const S = Object.assign({}, DEFAULTS, store.get(LS_KEYS.settings, {}));
   if (!LANGS[S.src]) S.src = 'auto';
@@ -1211,6 +1232,11 @@
   function curProv() { return PROVIDERS[S.provider] || PROVIDERS.gemini; }
   function curKey() { return String(S.keys[curProv().id] || '').trim(); }
   function curModel() { return String(S.models[curProv().id] || curProv().def).trim() || curProv().def; }
+  function curSttModel() {
+    const P = curProv();
+    if (typeof S.sttModels !== 'object' || !S.sttModels) S.sttModels = {};
+    return String(S.sttModels[P.id] || P.sttModel || '').trim() || P.sttModel;
+  }
 
   let history = store.get(LS_KEYS.history, []);
   if (!Array.isArray(history)) history = [];
@@ -2215,6 +2241,16 @@
     renderProviders();
     updateEngineChip();
     renderDiag();
+    const sm2 = $('sttModelSel');
+    if (sm2) {
+      const PP = curProv();
+      sm2.innerHTML = '';
+      (PP.sttModels || (PP.sttModel ? [PP.sttModel] : [])).forEach(m => {
+        const o = document.createElement('option'); o.value = m; o.textContent = m; sm2.appendChild(o);
+      });
+      if (!sm2.options.length) { sm2.innerHTML = '<option value="">—</option>'; sm2.disabled = true; }
+      else { sm2.disabled = false; sm2.value = curSttModel(); }
+    }
     icons();
   }
 
@@ -3128,7 +3164,7 @@
     if (P.sttUrl) {
       const fd = new FormData();
       fd.append('file', blob, 'speech.wav');
-      fd.append('model', P.sttModel);
+      fd.append('model', curSttModel());
       fd.append('response_format', 'verbose_json');   // gives per-segment confidence
       fd.append('temperature', '0');
       // First pass lets Whisper detect; a forced pass is used only to correct it.
@@ -3433,7 +3469,7 @@
 
     STT.active = true; STT.starting = false;
     const tr0 = STT.stream.getAudioTracks()[0];
-    dlog('stt.start', { rate: STT.srcRate, prov: curProv().id, model: curProv().sttModel || 'gemini-inline', pace: S.pace,
+    dlog('stt.start', { rate: STT.srcRate, prov: curProv().id, model: curSttModel() || 'gemini-inline', pace: S.pace,
       device: (tr0 && tr0.label || '?').slice(0, 40), muted: !!(tr0 && tr0.muted) });
     micStatus(t('sttReady').replace('{p}', curProv().name), true);
     return true;
@@ -3943,6 +3979,33 @@
     formal.addEventListener('change', () => { S.formal = formal.checked; saveSettings(); });
     const autoSp = $('autoSpeak'); autoSp.checked = !!S.autoSpeak;
     autoSp.addEventListener('change', () => setAutoSpeak(autoSp.checked));
+    const sm = $('sttModelSel');
+    function fillSttModels() {
+      const P = curProv();
+      sm.innerHTML = '';
+      (P.sttModels || (P.sttModel ? [P.sttModel] : [])).forEach(m => {
+        const o = document.createElement('option');
+        o.value = m; o.textContent = m;
+        sm.appendChild(o);
+      });
+      if (!sm.options.length) { sm.innerHTML = '<option value="">—</option>'; sm.disabled = true; }
+      else { sm.disabled = false; sm.value = curSttModel(); }
+    }
+    fillSttModels();
+    sm.addEventListener('change', () => {
+      S.sttModels[curProv().id] = sm.value; saveSettings();
+      toast(t('sttModelSet').replace('{m}', sm.value), 'ok', 2600);
+      if (STT.active) { sttStop(); sttStart(); }
+    });
+    $('bestModelBtn').addEventListener('click', () => {
+      const P = curProv();
+      const pick = P.best || P.def;
+      S.models[P.id] = pick; saveSettings();
+      model.value = pick;
+      renderModelList((liveModels[P.id] && liveModels[P.id].length) ? liveModels[P.id] : P.models);
+      renderProviders(); updateEngineChip();
+      toast(t('bestModelSet').replace('{m}', pick), 'ok', 3200);
+    });
     const pc = $('paceSel'); pc.value = S.pace || 'fast';
     pc.addEventListener('change', () => { S.pace = pc.value; saveSettings(); toast(t('paceSet'), 'ok', 2000); });
     const se = $('sttEngine'); se.value = S.sttEngine || 'auto';
